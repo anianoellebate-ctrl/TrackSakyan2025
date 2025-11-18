@@ -628,12 +628,14 @@ class CongestionController {
                 await this.initialize();
             }
 
-            const { hour, dayOfWeek } = req.body || {};
-            const currentTime = new Date();
-            const targetHour = hour !== undefined ? parseInt(hour) : currentTime.getHours();
-            const targetDay = dayOfWeek !== undefined ? parseInt(dayOfWeek) : currentTime.getDay();
+           const { hour, dayOfWeek } = req.body || {};
+           const currentTime = new Date().toLocaleString("en-US", {timeZone: "Asia/Manila"});
+           const phTime = new Date(currentTime);
+        
+           const targetHour = hour !== undefined ? parseInt(hour) : phTime.getHours();
+           const targetDay = dayOfWeek !== undefined ? parseInt(dayOfWeek) : phTime.getDay();
 
-            console.log(`🎯 City-wide passenger demand analysis for ${targetHour}:00`);
+           console.log(`🎯 City-wide passenger demand analysis for ${targetHour}:00 (PH Time)`);
 
             const citywideAnalysis = this.predictor.analyzeCitywidePassengerDemand(targetHour, targetDay);
 
@@ -672,26 +674,18 @@ class CongestionController {
             
             console.log('🎯 AI Congestion Assistant endpoint called');
             
-            // // Ensure ML is initialized
-            // if (!this.isInitialized) {
-            //     await this.initialize();
-            // }
-
-             if (!this.isInitialized || !this.predictor.isTrained) {
-            const initResult = await this.initialize();
-            if (!initResult.trained) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'AI Assistant unavailable: No training data available',
-                    voiceResponse: "I need historical trip data to provide congestion analysis. Please ensure trip data is available in the database."
-                });
+            // Ensure ML is initialized
+            if (!this.isInitialized) {
+                await this.initialize();
             }
-        }
 
-            const aiReport = await this.aiAssistant.generateCongestionReport(
-                hour !== undefined ? parseInt(hour) : null,
-                dayOfWeek !== undefined ? parseInt(dayOfWeek) : null
-            );
+            const currentTime = new Date().toLocaleString("en-US", {timeZone: "Asia/Manila"});
+            const phTime = new Date(currentTime);
+        
+            const targetHour = hour !== undefined ? parseInt(hour) : phTime.getHours();
+            const targetDay = dayOfWeek !== undefined ? parseInt(dayOfWeek) : phTime.getDay();
+
+            const aiReport = await this.aiAssistant.generateCongestionReport(targetHour, targetDay);
 
             if (aiReport.success) {
                 res.json({
