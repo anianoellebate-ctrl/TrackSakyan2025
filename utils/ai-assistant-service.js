@@ -279,11 +279,20 @@ class JeepneyAIAssistant {
 
     async generateDensityReport(hour = null, dayOfWeek = null) {
         try {
-            const currentTime = new Date();
-            const targetHour = hour !== null ? hour : currentTime.getHours();
-            const targetDay = dayOfWeek !== null ? dayOfWeek : currentTime.getDay();
+            // const currentTime = new Date();
+            // const targetHour = hour !== null ? hour : currentTime.getHours();
+            // const targetDay = dayOfWeek !== null ? dayOfWeek : currentTime.getDay();
             
-            console.log(`🤖 AI Assistant: PURE ML Analysis for ${targetHour}:00`);
+            // console.log(`🤖 AI Assistant: PURE ML Analysis for ${targetHour}:00`);
+
+            const currentTime = new Date().toLocaleString("en-US", {timeZone: "Asia/Manila"});
+            const phTime = new Date(currentTime);
+        
+            const targetHour = hour !== null ? hour : phTime.getHours();
+            const targetDay = dayOfWeek !== null ? dayOfWeek : phTime.getDay();
+        
+            console.log(`🤖 AI Assistant: PURE ML Analysis for ${targetHour}:00 (PH Time)`);
+
 
             // Ensure ML is trained
             await this.ensureModelTrained();
@@ -318,7 +327,7 @@ class JeepneyAIAssistant {
                 categorizedAreas: categorized,
                 mlStats: {
                     areasAnalyzed: citywideAnalysis.length,
-                    analysisTime: `${targetHour}:00`,
+                    analysisTime: `${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}`,
                     dataSource: 'Machine Learning',
                     mlMethod: 'Neural Network',
                     geocodingProvider: 'Mapbox'
@@ -374,9 +383,9 @@ class JeepneyAIAssistant {
     // HONEST VOICE RESPONSE
     let voiceResponse;
     if (mlPredictions === 0) {
-        voiceResponse = `I have no machine learning data for ${dayName} ${hour}:00. The neural network cannot make predictions without historical trip patterns.`;
+         voiceResponse = `I have no machine learning data for ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}. The neural network cannot make predictions without historical trip patterns.`;
     } else {
-        voiceResponse = `Based on limited ML data for ${dayName} ${hour}:00: `;
+        voiceResponse = `Based on limited ML data for ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}: `;
         
         // Include ALL density levels in voice response
         const parts = [];
@@ -412,18 +421,18 @@ class JeepneyAIAssistant {
 
     // HONEST TEXT REPORT
     let textReport = `🧠 HONEST MACHINE LEARNING REPORT\n`;
-    textReport += `Time: ${dayName} ${hour}:00\n`;
+    textReport += `Time: ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}\n`;
     textReport += `Status: ${mlPredictions > 0 ? 'LIMITED DATA' : 'NO DATA AVAILABLE'}\n`;
     textReport += `ML Predictions: ${mlPredictions} areas\n`;
 
     if (mlPredictions === 0) {
         textReport += `❌ NO ML PREDICTIONS POSSIBLE\n`;
-        textReport += `The neural network has no training data for ${dayName} ${hour}:00.\n`;
+        textReport += `The neural network has no training data for ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}.\n`;
         textReport += `ML requires historical trip patterns to make predictions.\n`;
         textReport += `\nConsider using real-time data instead of ML predictions.`;
     } else {
         textReport += `⚠️ LIMITED CONFIDENCE PREDICTIONS\n`;
-        textReport += `Based on sparse training data for this time period.\n\n`;
+        textReport += `Based on sparse training data for ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}.\n\n`;
         
         // Show ALL density levels in text report
         if (categorized.highDensity.length > 0) {
