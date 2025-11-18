@@ -7,11 +7,13 @@ class PassengerCongestionAIAssistant {
 
     async generateCongestionReport(hour = null, dayOfWeek = null) {
         try {
-            const currentTime = new Date();
-            const targetHour = hour !== null ? hour : currentTime.getHours();
-            const targetDay = dayOfWeek !== null ? dayOfWeek : currentTime.getDay();
-            
-            console.log(`🤖 AI Assistant: Passenger Congestion Analysis for ${targetHour}:00`);
+            const currentTime = new Date().toLocaleString("en-US", {timeZone: "Asia/Manila"});
+            const phTime = new Date(currentTime);
+        
+            const targetHour = hour !== null ? hour : phTime.getHours();
+            const targetDay = dayOfWeek !== null ? dayOfWeek : phTime.getDay();
+        
+            console.log(`🤖 AI Assistant: Passenger Congestion Analysis for ${targetHour}:00 (PH Time)`);
 
             // Ensure ML is trained
             await this.ensureModelTrained();
@@ -46,7 +48,7 @@ class PassengerCongestionAIAssistant {
                 categorizedAreas: categorized,
                 mlStats: {
                     areasAnalyzed: citywideAnalysis.length,
-                    analysisTime: `${targetHour}:00`,
+                    analysisTime: `${targetHour % 12 || 12}:00 ${targetHour >= 12 ? 'PM' : 'AM'}`,
                     dataSource: 'Machine Learning',
                     mlMethod: 'Neural Network',
                     geocodingProvider: 'Mapbox',
@@ -119,9 +121,9 @@ class PassengerCongestionAIAssistant {
         // HONEST VOICE RESPONSE
         let voiceResponse;
         if (mlPredictions === 0) {
-            voiceResponse = `I have no machine learning data for passenger congestion on ${dayName} ${hour}:00. The neural network cannot make predictions without historical passenger patterns.`;
+            voiceResponse = `I have no machine learning data for passenger congestion on ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}. The neural network cannot make predictions without historical passenger patterns.`;
         } else {
-            voiceResponse = `Based on passenger demand analysis for ${dayName} ${hour}:00: `;
+            voiceResponse = `Based on passenger demand analysis for ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}: `;
             
             // Include ALL congestion levels in voice response
             const parts = [];
@@ -166,19 +168,19 @@ class PassengerCongestionAIAssistant {
 
         // HONEST TEXT REPORT
         let textReport = `🧠 PASSENGER CONGESTION ML REPORT\n`;
-        textReport += `Time: ${dayName} ${hour}:00\n`;
+        textReport += `Time: ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}\n`;
         textReport += `Status: ${mlPredictions > 0 ? 'LIMITED DATA' : 'NO DATA AVAILABLE'}\n`;
         textReport += `ML Predictions: ${mlPredictions} areas\n`;
         textReport += `Total Predicted Passengers: ${totalPredictedPassengers}\n`;
 
         if (mlPredictions === 0) {
             textReport += `\n❌ NO CONGESTION PREDICTIONS POSSIBLE\n`;
-            textReport += `The neural network has no training data for ${dayName} ${hour}:00.\n`;
+            textReport += `The neural network has no training data for ${dayName} ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}.\n`;
             textReport += `ML requires historical passenger patterns to make predictions.\n`;
             textReport += `\nConsider using real-time passenger data instead of ML predictions.`;
         } else {
             textReport += `\n⚠️ LIMITED CONFIDENCE CONGESTION PREDICTIONS\n`;
-            textReport += `Based on sparse passenger data for this time period.\n\n`;
+            textReport += `Based on sparse passenger data for ${hour % 12 || 12}:00 ${hour >= 12 ? 'PM' : 'AM'}.\n\n`;
             
             // Show ALL congestion levels in text report
             if (categorized.highDemand.length > 0) {
