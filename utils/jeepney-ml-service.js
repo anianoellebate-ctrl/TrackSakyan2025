@@ -17,9 +17,11 @@ class JeepneyDensityPredictor {
         
         // Aggregate data by area and hour
         trips.forEach(trip => {
-            const date = parseISO(trip.created_at);
-            const hour = date.getHours();
-            const dayOfWeek = date.getDay();
+            const utcDate = parseISO(trip.created_at);
+            const phTime = new Date(utcDate.toLocaleString("en-US", {timeZone: "Asia/Manila"}));
+            const hour = phTime.getHours();
+            const dayOfWeek = phTime.getDay();
+            
             const areaKey = `${Math.round(trip.start_lat * 1000)},${Math.round(trip.start_lng * 1000)}`;
             const timeKey = `${dayOfWeek},${hour},${areaKey}`;
             
