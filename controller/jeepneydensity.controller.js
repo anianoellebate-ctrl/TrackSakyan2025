@@ -92,6 +92,58 @@ class JeepneyDensityController {
         }
     }
 
+    async debugTrainingData(req, res) {
+        try {
+            if (!this.isInitialized) {
+                await this.initialize();
+            }
+    
+            const trainingData = this.predictor.trainingData || [];
+            
+            // Find all Thursday data
+            const thursdayData = trainingData.filter(item => item.dayOfWeek === 4);
+            
+            // Get unique hours for Thursday
+            const thursdayHours = [...new Set(thursdayData.map(item => item.hour))].sort((a, b) => a - b);
+            
+            // Detailed breakdown
+            const hourBreakdown = {};
+            thursdayData.forEach(item => {
+                const key = `Hour ${item.hour}`;
+                if (!hourBreakdown[key]) {
+                    hourBreakdown[key] = {
+                        entries: 0,
+                        totalTrips: 0,
+                        areas: []
+                    };
+                }
+                hourBreakdown[key].entries++;
+                hourBreakdown[key].totalTrips += item.total_trips;
+                hourBreakdown[key].areas.push(`(${item.area_lat}, ${item.area_lng})`);
+            });
+    
+            res.json({
+                success: true,
+                total_training_points: trainingData.length,
+                thursday_training_points: thursdayData.length,
+                thursday_hours_available: thursdayHours,
+                thursday_hour_breakdown: hourBreakdown,
+                sample_thursday_entries: thursdayData.slice(0, 5).map(item => ({
+                    hour: item.hour,
+                    area: `(${item.area_lat}, ${item.area_lng})`,
+                    trips: item.total_trips,
+                    jeepneys: item.jeepney_count
+                }))
+            });
+    
+        } catch (error) {
+            res.status(500).json({
+                success: false,
+                error: error.message
+            });
+        }
+    }
+
     // NEW: City-wide analysis endpoint
     async analyzeCitywide(req, res) {
         try {
@@ -100,11 +152,19 @@ class JeepneyDensityController {
             }
 
             const { hour, dayOfWeek } = req.body || {};
-            const currentTime = new Date();
-            const targetHour = hour !== undefined ? parseInt(hour) : currentTime.getHours();
-            const targetDay = dayOfWeek !== undefined ? parseInt(dayOfWeek) : currentTime.getDay();
+            // const currentTime = new Date();
+            // const targetHour = hour !== undefined ? parseInt(hour) : currentTime.getHours();
+            // const targetDay = dayOfWeek !== undefined ? parseInt(dayOfWeek) : currentTime.getDay();
 
-            console.log(`🎯 City-wide analysis requested for ${targetHour}:00`);
+            // console.log(`🎯 City-wide analysis requested for ${targetHour}:00`);
+
+            const currentTime = new Date().toLocaleString("en-US", {timeZone: "Asia/Manila"});
+            const phTime = new Date(currentTime);
+            
+            const targetHour = hour !== undefined ? parseInt(hour) : phTime.getHours();
+            const targetDay = dayOfWeek !== undefined ? parseInt(dayOfWeek) : phTime.getDay();
+    
+            console.log(`🎯 City-wide analysis requested for ${targetHour}:00 (PH Time)`);
 
             const citywideAnalysis = this.predictor.analyzeCitywideDensity(targetHour, targetDay);
 
@@ -141,10 +201,13 @@ class JeepneyDensityController {
                 await this.initialize();
             }
 
-            const aiReport = await this.aiAssistant.generateDensityReport(
-                hour !== undefined ? parseInt(hour) : null,
-                dayOfWeek !== undefined ? parseInt(dayOfWeek) : null
-            );
+            const currentTime = new Date().toLocaleString("en-US", {timeZone: "Asia/Manila"});
+            const phTime = new Date(currentTime);
+            
+            const targetHour = hour !== undefined ? parseInt(hour) : phTime.getHours();
+            const targetDay = dayOfWeek !== undefined ? parseInt(dayOfWeek) : phTime.getDay();
+    
+            const aiReport = await this.aiAssistant.generateDensityReport(targetHour, targetDay);
 
             if (aiReport.success) {
                 res.json({
