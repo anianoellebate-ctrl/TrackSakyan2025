@@ -1896,457 +1896,22 @@
 
 
 
-const db = require('../database');
-const { haversineDistance } = require('../utils/geoUtils');
-
-// ===================================================================
-// CONFIGURATION – DAVAO REALITY
-// ===================================================================
-const MAX_WALK_KM_DIRECT   = 0.7;   // 200 m to board/alight
-const MAX_WALK_KM_TRANSFER = 0.7;   // 700 m between jeepneys
-const MAX_RIDE_KM          = 15;   
-const MIN_RIDE_KM          = 1.5;   
-const AVG_SPEED_KMH        = 20;    
-const MAX_RESULTS          = 30;
-const MAX_TRANSFER_SEARCH  = 10;    
-
-// ===================================================================
-// MAIN: planTrip – Fixed duplicates in both direct and transfer routes
-// ===================================================================
-const planTrip = async (req, res) => {
-  try {
-    const { startLat, startLng, endLat, endLng } = req.body;
-
-    if (!startLat || !startLng || !endLat || !endLng) {
-      return res.status(400).json({
-        success: false,
-        error: 'Start and end coordinates are required'
-      });
-    }
-
-    const startPoint = { lat: parseFloat(startLat), lng: parseFloat(startLng) };
-    const endPoint   = { lat: parseFloat(endLat),   lng: parseFloat(endLng) };
-
-    const routesResult = await db.query(`
-      SELECT id, route_name, coordinates 
-      FROM routes 
-      WHERE coordinates IS NOT NULL
-    `);
-
-    console.log(`Found ${routesResult.rows.length} routes in DB`);
-
-    // =================================================================
-    // PROGRESSIVE SEARCH FUNCTION
-    // =================================================================
-    const searchWithMaxRide = async (currentMaxRideKm) => {
-      const directRoutes = [];
-      const transferRoutes = [];
-
-      // =================================================================
-      // 1. DIRECT ROUTES - FIXED DUPLICATES
-      // =================================================================
-      const usedDirectRoutes = new Set(); // Track used route names to avoid duplicates
-      
-      for (const route of routesResult.rows) {
-        // Skip if we already have this route name
-        if (usedDirectRoutes.has(route.route_name)) continue;
-        
-        const routeCoords = route.coordinates;
-        if (!Array.isArray(routeCoords) || routeCoords.length < 10) continue;
-
-        const startStops = findPracticalStops(startPoint, routeCoords, MAX_WALK_KM_DIRECT);
-        const endStops   = findPracticalStops(endPoint,   routeCoords, MAX_WALK_KM_DIRECT);
-
-        if (startStops.length === 0 || endStops.length === 0) continue;
-
-        let bestRide = null;
-        let bestScore = Infinity;
-
-        for (const startStop of startStops) {
-          for (const endStop of endStops) {
-            if (startStop.segment >= endStop.segment) continue;
-
-            const rideSegment = buildRideSegment(routeCoords, startStop, endStop);
-            const rideKm = calculateRouteDistance(rideSegment);
-
-            if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
-
-            const walkKm = startStop.distance + endStop.distance;
-            const score = rideKm + walkKm * 2;
-
-            if (score < bestScore) {
-              bestScore = score;
-              bestRide = { startStop, endStop, rideKm, rideSegment, score };
-            }
-          }
-        }
-
-        if (bestRide) {
-          const rideMins = (bestRide.rideKm / AVG_SPEED_KMH) * 60;
-          const walkMins = (bestRide.startStop.distance + bestRide.endStop.distance) / 5 * 60;
-          const totalMins = Math.round(rideMins + walkMins);
-
-          directRoutes.push({
-            type: 'direct',
-            route: route.route_name,
-            startWalkDistance: bestRide.startStop.distance,
-            endWalkDistance:   bestRide.endStop.distance,
-            totalWalkDistance: bestRide.startStop.distance + bestRide.endStop.distance,
-            routeDistance:     bestRide.rideKm,
-            estimatedTime:     totalMins,
-            estimatedFare:     calculateFare(bestRide.rideKm),
-            routeSegment:      bestRide.rideSegment,
-            score:             bestRide.score
-          });
-          
-          // Mark this route name as used
-          usedDirectRoutes.add(route.route_name);
-        }
-      }
-
-      // =================================================================
-      // 2. TRANSFER ROUTES – FIXED DUPLICATES
-      // =================================================================
-      if (directRoutes.length === 0) {
-        console.log('No direct route – searching for 1-transfer (optimized)');
-
-        const startCandidates = routesResult.rows
-          .map(r => ({ route: r, dist: minDistanceToRoute(startPoint, r.coordinates) }))
-          .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
-          .sort((a, b) => a.dist - b.dist)
-          .slice(0, MAX_TRANSFER_SEARCH);
-
-        const endCandidates = routesResult.rows
-          .map(r => ({ route: r, dist: minDistanceToRoute(endPoint, r.coordinates) }))
-          .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
-          .sort((a, b) => a.dist - b.dist)
-          .slice(0, MAX_TRANSFER_SEARCH);
-
-        console.log(`Start candidates: ${startCandidates.length}, End: ${endCandidates.length}`);
-
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Transfer search timeout')), 1500)
-        );
-
-        const searchPromise = (async () => {
-          const results = [];
-          const usedTransferCombinations = new Set(); // Track used transfer combinations
-
-          for (const sCand of startCandidates) {
-            const routeA = sCand.route;
-            const startStopsA = findPracticalStops(startPoint, routeA.coordinates, MAX_WALK_KM_DIRECT);
-            if (startStopsA.length === 0) continue;
-
-            for (const eCand of endCandidates) {
-              if (routeA.id === eCand.route.id) continue;
-              const routeB = eCand.route;
-              const endStopsB = findPracticalStops(endPoint, routeB.coordinates, MAX_WALK_KM_DIRECT);
-              if (endStopsB.length === 0) continue;
-
-              // Find closest transfer point
-              let bestWalk = Infinity;
-              let bestPair = null;
-              for (const pA of routeA.coordinates) {
-                for (const pB of routeB.coordinates) {
-                  const walk = haversineDistance(pA[0], pA[1], pB[0], pB[1]);
-                  if (walk < bestWalk && walk <= MAX_WALK_KM_TRANSFER) {
-                    bestWalk = walk;
-                    bestPair = { pA, pB, walk };
-                  }
-                }
-              }
-              if (!bestPair) continue;
-
-              const bestA = findBestLeg(startStopsA, routeA.coordinates, bestPair.pA, currentMaxRideKm);
-              const bestB = findBestLeg(endStopsB, routeB.coordinates, bestPair.pB, currentMaxRideKm, true);
-              if (!bestA || !bestB) continue;
-
-              const totalWalk = bestA.boarding.distance + bestPair.walk + bestB.alight.distance;
-              const totalRide = bestA.rideKm + bestB.rideKm;
-              
-              // Calculate fare separately for each jeepney
-              const fareA = calculateFare(bestA.rideKm);
-              const fareB = calculateFare(bestB.rideKm);
-              const totalFare = fareA + fareB;
-              
-              const score = totalRide + totalWalk * 2;
-
-              const rideMins = (totalRide / AVG_SPEED_KMH) * 60;
-              const walkMins = (totalWalk / 5) * 60;
-              const totalMins = Math.round(rideMins + walkMins);
-
-              // Create unique combination key to avoid duplicates - include route names only
-              const comboKey = `${routeA.route_name}-${routeB.route_name}`;
-              
-              if (!usedTransferCombinations.has(comboKey)) {
-                usedTransferCombinations.add(comboKey);
-                
-                results.push({
-                  type: 'transfer',
-                  legs: [
-                    {
-                      route: routeA.route_name,
-                      startWalkDistance: bestA.boarding.distance,
-                      endWalkDistance: bestPair.walk,
-                      routeDistance: bestA.rideKm,
-                      routeSegment: bestA.segment,
-                      estimatedFare: fareA,
-                      boardingPoint: bestA.boarding.point,
-                      alightingPoint: bestPair.pA,
-                      estimatedTime: Math.round((bestA.rideKm / AVG_SPEED_KMH) * 60)
-                    },
-                    {
-                      route: routeB.route_name,
-                      startWalkDistance: bestPair.walk,
-                      endWalkDistance: bestB.alight.distance,
-                      routeDistance: bestB.rideKm,
-                      routeSegment: bestB.segment,
-                      estimatedFare: fareB,
-                      boardingPoint: bestPair.pB,
-                      alightingPoint: bestB.alight.point,
-                      estimatedTime: Math.round((bestB.rideKm / AVG_SPEED_KMH) * 60)
-                    }
-                  ],
-                  totalWalkDistance: totalWalk,
-                  routeDistance: totalRide,
-                  estimatedTime: totalMins,
-                  estimatedFare: totalFare,
-                  transferWalkDistance: bestPair.walk,
-                  transferPoint: {
-                    from: bestPair.pA,
-                    to: bestPair.pB,
-                    walkDistance: bestPair.walk
-                  },
-                  score,
-                  combination: comboKey
-                });
-
-                if (results.length >= MAX_RESULTS) return results;
-              }
-            }
-          }
-          return results;
-        })();
-
-        try {
-          transferRoutes.push(...await Promise.race([searchPromise, timeoutPromise]));
-        } catch (err) {
-          console.log('Transfer search skipped (timeout or error)');
-        }
-      }
-
-      return { directRoutes, transferRoutes };
-    };
-
-    // =================================================================
-    // PROGRESSIVE SEARCH EXECUTION
-    // =================================================================
-    let currentMaxRide = MAX_RIDE_KM;
-    let allDirectRoutes = [];
-    let allTransferRoutes = [];
-    let searchIterations = 0;
-    const MAX_ITERATIONS = 30;
-
-    while (searchIterations < MAX_ITERATIONS) {
-      console.log(`Searching with MAX_RIDE_KM = ${currentMaxRide}km`);
-      
-      const { directRoutes, transferRoutes } = await searchWithMaxRide(currentMaxRide);
-      
-      if (directRoutes.length > 0 || transferRoutes.length > 0) {
-        allDirectRoutes = directRoutes;
-        allTransferRoutes = transferRoutes;
-        console.log(`Found routes with MAX_RIDE_KM = ${currentMaxRide}km: ${directRoutes.length} direct, ${transferRoutes.length} transfer`);
-        break;
-      }
-      
-      currentMaxRide += 1;
-      searchIterations++;
-      
-      if (currentMaxRide > 50) {
-        console.log('Reached maximum search distance (50km) without finding routes');
-        break;
-      }
-    }
-
-    // =================================================================
-    // 3. FINAL RESPONSE - ADDITIONAL DUPLICATE REMOVAL FOR SAFETY
-    // =================================================================
-    // Remove any remaining duplicates in direct routes
-    const uniqueDirectRoutes = [];
-    const seenDirectRoutes = new Set();
-    for (const route of allDirectRoutes) {
-      if (!seenDirectRoutes.has(route.route)) {
-        seenDirectRoutes.add(route.route);
-        uniqueDirectRoutes.push(route);
-      }
-    }
-
-    // Remove any remaining duplicates in transfer routes
-    const uniqueTransferRoutes = [];
-    const seenTransferRoutes = new Set();
-    for (const route of allTransferRoutes) {
-      if (!seenTransferRoutes.has(route.combination)) {
-        seenTransferRoutes.add(route.combination);
-        uniqueTransferRoutes.push(route);
-      }
-    }
-
-    const allRoutes = uniqueDirectRoutes.concat(uniqueTransferRoutes);
-    allRoutes.sort((a, b) => a.score - b.score);
-
-    res.json({
-      success: true,
-      routes: allRoutes.slice(0, MAX_RESULTS),
-      hasDirectRoutes: uniqueDirectRoutes.length > 0,
-      hasTransferRoutes: uniqueTransferRoutes.length > 0,
-      metadata: {
-        totalDirectRoutes: uniqueDirectRoutes.length,
-        totalTransferRoutes: uniqueTransferRoutes.length,
-        maxRideKmUsed: currentMaxRide,
-        searchArea: { direct: MAX_WALK_KM_DIRECT, transfer: MAX_WALK_KM_TRANSFER }
-      }
-    });
-
-  } catch (error) {
-    console.error('Trip planning error:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
-  }
-};
-
-// ===================================================================
-// HELPER FUNCTIONS
-// ===================================================================
-const minDistanceToRoute = (point, coords) => {
-  let min = Infinity;
-  for (const [lat, lng] of coords) {
-    const d = haversineDistance(point.lat, point.lng, lat, lng);
-    if (d < min) min = d;
-  }
-  return min;
-};
-
-const findBestLeg = (userStops, routeCoords, transferPoint, currentMaxRideKm, reverse = false) => {
-  let best = null;
-  let bestScore = Infinity;
-
-  const transferIdx = routeCoords.findIndex(p =>
-    Math.abs(p[0] - transferPoint[0]) < 1e-6 && Math.abs(p[1] - transferPoint[1]) < 1e-6
-  );
-  if (transferIdx === -1) return null;
-
-  for (const stop of userStops) {
-    const startIdx = reverse ? transferIdx : stop.segment;
-    const endIdx = reverse ? stop.segment : transferIdx;
-    if (startIdx >= endIdx) continue;
-
-    const segment = routeCoords.slice(startIdx, endIdx + 1);
-    const rideKm = calculateRouteDistance(segment);
-    if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
-
-    const score = rideKm + stop.distance * 2;
-    if (score < bestScore) {
-      bestScore = score;
-      best = {
-        boarding: reverse ? { distance: 0, point: transferPoint } : stop,
-        alight: reverse ? stop : { distance: 0, point: transferPoint },
-        rideKm,
-        segment
-      };
-    }
-  }
-  return best;
-};
-
-const findPracticalStops = (userPoint, routeCoords, maxWalkKm) => {
-  const stops = [];
-  for (let i = 0; i < routeCoords.length; i++) {
-    const dist = haversineDistance(userPoint.lat, userPoint.lng, routeCoords[i][0], routeCoords[i][1]);
-    if (dist <= maxWalkKm) {
-      stops.push({ segment: i, point: routeCoords[i], distance: dist });
-    }
-  }
-  return stops;
-};
-
-const buildRideSegment = (coords, startStop, endStop) => {
-  return coords.slice(startStop.segment, endStop.segment + 1);
-};
-
-const calculateRouteDistance = (segment) => {
-  let total = 0;
-  for (let i = 1; i < segment.length; i++) {
-    total += haversineDistance(
-      segment[i-1][0], segment[i-1][1],
-      segment[i][0],   segment[i][1]
-    );
-  }
-  return total;
-};
-
-const calculateFare = (distance) => {
-  const baseFare = 13;
-  const baseKm   = 4;
-  const rate     = 1.8;
-  if (distance <= baseKm) return baseFare;
-  const extraKm = Math.ceil(distance - baseKm);
-  return Math.round(baseFare + extraKm * rate);
-};
-
-// ===================================================================
-// MAPBOX SEARCH
-// ===================================================================
-const searchPlaces = async (req, res) => {
-  try {
-    const { query, lat, lng } = req.query;
-    if (!query || query.length < 2) return res.json({ success: true, features: [] });
-
-    const TOMTOM_API_KEY = 'Ev7u9w9pfeL7JJ0wBHbwNIIzXGNnlK4K';
-    const latLng = lat && lng ? `&lat=${lat}&lon=${lng}` : '&lat=7.1907&lon=125.4553';
-    
-    const url = `https://api.tomtom.com/search/2/search/${encodeURIComponent(query)}.json?key=${TOMTOM_API_KEY}${latLng}&limit=10&countrySet=PH&idxSet=POI`;
-    
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    const features = data.results?.map(place => ({
-      id: place.id,
-      place_name: place.poi?.name + ', ' + place.address?.freeformAddress,
-      text: place.poi?.name,
-      center: [place.position.lon, place.position.lat],
-      address: place.address?.freeformAddress,
-      category: place.poi?.classifications?.[0]?.code
-    })) || [];
-
-    res.json({ success: true, features });
-  } catch (error) {
-    console.error('TomTom error:', error);
-    res.json({ success: true, features: [] });
-  }
-};
-
-// ===================================================================
-// EXPORT
-// ===================================================================
-module.exports = { planTrip, searchPlaces };
-
-
-
 // const db = require('../database');
 // const { haversineDistance } = require('../utils/geoUtils');
 
 // // ===================================================================
 // // CONFIGURATION – DAVAO REALITY
 // // ===================================================================
-// const MAX_WALK_KM_DIRECT   = 0.2;   // 200 m to board/alight
+// const MAX_WALK_KM_DIRECT   = 0.7;   // 200 m to board/alight
 // const MAX_WALK_KM_TRANSFER = 0.7;   // 700 m between jeepneys
-// const MAX_RIDE_KM          = 25;   
+// const MAX_RIDE_KM          = 15;   
 // const MIN_RIDE_KM          = 1.5;   
 // const AVG_SPEED_KMH        = 20;    
 // const MAX_RESULTS          = 30;
-// const MAX_TRANSFER_SEARCH  = 15;    
+// const MAX_TRANSFER_SEARCH  = 10;    
 
 // // ===================================================================
-// // MAIN: planTrip – ALWAYS search both direct AND transfer routes
+// // MAIN: planTrip – Fixed duplicates in both direct and transfer routes
 // // ===================================================================
 // const planTrip = async (req, res) => {
 //   try {
@@ -2378,11 +1943,12 @@ module.exports = { planTrip, searchPlaces };
 //       const transferRoutes = [];
 
 //       // =================================================================
-//       // 1. DIRECT ROUTES - FIXED DUPLICATES AND SCORING
+//       // 1. DIRECT ROUTES - FIXED DUPLICATES
 //       // =================================================================
-//       const usedDirectRoutes = new Set();
+//       const usedDirectRoutes = new Set(); // Track used route names to avoid duplicates
       
 //       for (const route of routesResult.rows) {
+//         // Skip if we already have this route name
 //         if (usedDirectRoutes.has(route.route_name)) continue;
         
 //         const routeCoords = route.coordinates;
@@ -2406,11 +1972,7 @@ module.exports = { planTrip, searchPlaces };
 //             if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
 
 //             const walkKm = startStop.distance + endStop.distance;
-            
-//             // FIXED SCORING: Heavily prioritize minimal walking
-//             // If you're close to the route (within 50m), don't walk further!
-//             const walkPenalty = startStop.distance < 0.05 ? walkKm * 100 : walkKm * 10;
-//             const score = walkPenalty + rideKm;
+//             const score = rideKm + walkKm * 2;
 
 //             if (score < bestScore) {
 //               bestScore = score;
@@ -2437,68 +1999,72 @@ module.exports = { planTrip, searchPlaces };
 //             score:             bestRide.score
 //           });
           
+//           // Mark this route name as used
 //           usedDirectRoutes.add(route.route_name);
 //         }
 //       }
 
 //       // =================================================================
-//       // 2. TRANSFER ROUTES – ALWAYS SEARCH
+//       // 2. TRANSFER ROUTES – FIXED DUPLICATES
 //       // =================================================================
-//       console.log('Searching for transfer routes...');
+//       if (directRoutes.length === 0) {
+//         console.log('No direct route – searching for 1-transfer (optimized)');
 
-//       const startCandidates = routesResult.rows
-//         .map(r => ({ route: r, dist: minDistanceToRoute(startPoint, r.coordinates) }))
-//         .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
-//         .sort((a, b) => a.dist - b.dist)
-//         .slice(0, MAX_TRANSFER_SEARCH);
+//         const startCandidates = routesResult.rows
+//           .map(r => ({ route: r, dist: minDistanceToRoute(startPoint, r.coordinates) }))
+//           .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
+//           .sort((a, b) => a.dist - b.dist)
+//           .slice(0, MAX_TRANSFER_SEARCH);
 
-//       const endCandidates = routesResult.rows
-//         .map(r => ({ route: r, dist: minDistanceToRoute(endPoint, r.coordinates) }))
-//         .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
-//         .sort((a, b) => a.dist - b.dist)
-//         .slice(0, MAX_TRANSFER_SEARCH);
+//         const endCandidates = routesResult.rows
+//           .map(r => ({ route: r, dist: minDistanceToRoute(endPoint, r.coordinates) }))
+//           .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
+//           .sort((a, b) => a.dist - b.dist)
+//           .slice(0, MAX_TRANSFER_SEARCH);
 
-//       console.log(`Start candidates: ${startCandidates.length}, End: ${endCandidates.length}`);
+//         console.log(`Start candidates: ${startCandidates.length}, End: ${endCandidates.length}`);
 
-//       const timeoutPromise = new Promise((_, reject) =>
-//         setTimeout(() => reject(new Error('Transfer search timeout')), 3000)
-//       );
+//         const timeoutPromise = new Promise((_, reject) =>
+//           setTimeout(() => reject(new Error('Transfer search timeout')), 1500)
+//         );
 
-//       const searchPromise = (async () => {
-//         const results = [];
-//         const usedTransferCombinations = new Set();
+//         const searchPromise = (async () => {
+//           const results = [];
+//           const usedTransferCombinations = new Set(); // Track used transfer combinations
 
-//         for (const sCand of startCandidates) {
-//           const routeA = sCand.route;
-//           const startStopsA = findPracticalStops(startPoint, routeA.coordinates, MAX_WALK_KM_DIRECT);
-//           if (startStopsA.length === 0) continue;
+//           for (const sCand of startCandidates) {
+//             const routeA = sCand.route;
+//             const startStopsA = findPracticalStops(startPoint, routeA.coordinates, MAX_WALK_KM_DIRECT);
+//             if (startStopsA.length === 0) continue;
 
-//           for (const eCand of endCandidates) {
-//             if (routeA.id === eCand.route.id) continue;
-//             const routeB = eCand.route;
-//             const endStopsB = findPracticalStops(endPoint, routeB.coordinates, MAX_WALK_KM_DIRECT);
-//             if (endStopsB.length === 0) continue;
+//             for (const eCand of endCandidates) {
+//               if (routeA.id === eCand.route.id) continue;
+//               const routeB = eCand.route;
+//               const endStopsB = findPracticalStops(endPoint, routeB.coordinates, MAX_WALK_KM_DIRECT);
+//               if (endStopsB.length === 0) continue;
 
-//             // Find ALL good transfer points, not just the closest
-//             const transferPoints = [];
-//             for (const pA of routeA.coordinates) {
-//               for (const pB of routeB.coordinates) {
-//                 const walk = haversineDistance(pA[0], pA[1], pB[0], pB[1]);
-//                 if (walk <= MAX_WALK_KM_TRANSFER) {
-//                   transferPoints.push({ pA, pB, walk });
+//               // Find closest transfer point
+//               let bestWalk = Infinity;
+//               let bestPair = null;
+//               for (const pA of routeA.coordinates) {
+//                 for (const pB of routeB.coordinates) {
+//                   const walk = haversineDistance(pA[0], pA[1], pB[0], pB[1]);
+//                   if (walk < bestWalk && walk <= MAX_WALK_KM_TRANSFER) {
+//                     bestWalk = walk;
+//                     bestPair = { pA, pB, walk };
+//                   }
 //                 }
 //               }
-//             }
+//               if (!bestPair) continue;
 
-//             // Try multiple transfer points to get different route options
-//             for (const transferPair of transferPoints.slice(0, 3)) {
-//               const bestA = findBestLeg(startStopsA, routeA.coordinates, transferPair.pA, currentMaxRideKm);
-//               const bestB = findBestLeg(endStopsB, routeB.coordinates, transferPair.pB, currentMaxRideKm, true);
+//               const bestA = findBestLeg(startStopsA, routeA.coordinates, bestPair.pA, currentMaxRideKm);
+//               const bestB = findBestLeg(endStopsB, routeB.coordinates, bestPair.pB, currentMaxRideKm, true);
 //               if (!bestA || !bestB) continue;
 
-//               const totalWalk = bestA.boarding.distance + transferPair.walk + bestB.alight.distance;
+//               const totalWalk = bestA.boarding.distance + bestPair.walk + bestB.alight.distance;
 //               const totalRide = bestA.rideKm + bestB.rideKm;
               
+//               // Calculate fare separately for each jeepney
 //               const fareA = calculateFare(bestA.rideKm);
 //               const fareB = calculateFare(bestB.rideKm);
 //               const totalFare = fareA + fareB;
@@ -2509,8 +2075,8 @@ module.exports = { planTrip, searchPlaces };
 //               const walkMins = (totalWalk / 5) * 60;
 //               const totalMins = Math.round(rideMins + walkMins);
 
-//               // Create unique key including transfer point to allow multiple routes with same jeepney combo
-//               const comboKey = `${routeA.route_name}-${routeB.route_name}-${transferPair.pA[0].toFixed(4)}-${transferPair.pA[1].toFixed(4)}`;
+//               // Create unique combination key to avoid duplicates - include route names only
+//               const comboKey = `${routeA.route_name}-${routeB.route_name}`;
               
 //               if (!usedTransferCombinations.has(comboKey)) {
 //                 usedTransferCombinations.add(comboKey);
@@ -2521,22 +2087,22 @@ module.exports = { planTrip, searchPlaces };
 //                     {
 //                       route: routeA.route_name,
 //                       startWalkDistance: bestA.boarding.distance,
-//                       endWalkDistance: transferPair.walk,
+//                       endWalkDistance: bestPair.walk,
 //                       routeDistance: bestA.rideKm,
 //                       routeSegment: bestA.segment,
 //                       estimatedFare: fareA,
 //                       boardingPoint: bestA.boarding.point,
-//                       alightingPoint: transferPair.pA,
+//                       alightingPoint: bestPair.pA,
 //                       estimatedTime: Math.round((bestA.rideKm / AVG_SPEED_KMH) * 60)
 //                     },
 //                     {
 //                       route: routeB.route_name,
-//                       startWalkDistance: transferPair.walk,
+//                       startWalkDistance: bestPair.walk,
 //                       endWalkDistance: bestB.alight.distance,
 //                       routeDistance: bestB.rideKm,
 //                       routeSegment: bestB.segment,
 //                       estimatedFare: fareB,
-//                       boardingPoint: transferPair.pB,
+//                       boardingPoint: bestPair.pB,
 //                       alightingPoint: bestB.alight.point,
 //                       estimatedTime: Math.round((bestB.rideKm / AVG_SPEED_KMH) * 60)
 //                     }
@@ -2545,28 +2111,28 @@ module.exports = { planTrip, searchPlaces };
 //                   routeDistance: totalRide,
 //                   estimatedTime: totalMins,
 //                   estimatedFare: totalFare,
-//                   transferWalkDistance: transferPair.walk,
+//                   transferWalkDistance: bestPair.walk,
 //                   transferPoint: {
-//                     from: transferPair.pA,
-//                     to: transferPair.pB,
-//                     walkDistance: transferPair.walk
+//                     from: bestPair.pA,
+//                     to: bestPair.pB,
+//                     walkDistance: bestPair.walk
 //                   },
 //                   score,
 //                   combination: comboKey
 //                 });
 
-//                 if (results.length >= MAX_RESULTS * 2) return results;
+//                 if (results.length >= MAX_RESULTS) return results;
 //               }
 //             }
 //           }
-//         }
-//         return results;
-//       })();
+//           return results;
+//         })();
 
-//       try {
-//         transferRoutes.push(...await Promise.race([searchPromise, timeoutPromise]));
-//       } catch (err) {
-//         console.log('Transfer search timeout - returning partial results');
+//         try {
+//           transferRoutes.push(...await Promise.race([searchPromise, timeoutPromise]));
+//         } catch (err) {
+//           console.log('Transfer search skipped (timeout or error)');
+//         }
 //       }
 
 //       return { directRoutes, transferRoutes };
@@ -2586,11 +2152,9 @@ module.exports = { planTrip, searchPlaces };
       
 //       const { directRoutes, transferRoutes } = await searchWithMaxRide(currentMaxRide);
       
-//       allDirectRoutes = directRoutes;
-//       allTransferRoutes = transferRoutes;
-      
-//       // Stop if we found enough routes (either direct or transfer)
-//       if (allDirectRoutes.length > 0 || allTransferRoutes.length >= 3) {
+//       if (directRoutes.length > 0 || transferRoutes.length > 0) {
+//         allDirectRoutes = directRoutes;
+//         allTransferRoutes = transferRoutes;
 //         console.log(`Found routes with MAX_RIDE_KM = ${currentMaxRide}km: ${directRoutes.length} direct, ${transferRoutes.length} transfer`);
 //         break;
 //       }
@@ -2605,8 +2169,9 @@ module.exports = { planTrip, searchPlaces };
 //     }
 
 //     // =================================================================
-//     // 3. FINAL RESPONSE - REMOVE DUPLICATES
+//     // 3. FINAL RESPONSE - ADDITIONAL DUPLICATE REMOVAL FOR SAFETY
 //     // =================================================================
+//     // Remove any remaining duplicates in direct routes
 //     const uniqueDirectRoutes = [];
 //     const seenDirectRoutes = new Set();
 //     for (const route of allDirectRoutes) {
@@ -2616,6 +2181,7 @@ module.exports = { planTrip, searchPlaces };
 //       }
 //     }
 
+//     // Remove any remaining duplicates in transfer routes
 //     const uniqueTransferRoutes = [];
 //     const seenTransferRoutes = new Set();
 //     for (const route of allTransferRoutes) {
@@ -2625,7 +2191,6 @@ module.exports = { planTrip, searchPlaces };
 //       }
 //     }
 
-//     // Combine and sort all routes
 //     const allRoutes = uniqueDirectRoutes.concat(uniqueTransferRoutes);
 //     allRoutes.sort((a, b) => a.score - b.score);
 
@@ -2763,3 +2328,438 @@ module.exports = { planTrip, searchPlaces };
 // // EXPORT
 // // ===================================================================
 // module.exports = { planTrip, searchPlaces };
+
+
+
+const db = require('../database');
+const { haversineDistance } = require('../utils/geoUtils');
+
+// ===================================================================
+// CONFIGURATION – DAVAO REALITY
+// ===================================================================
+const MAX_WALK_KM_DIRECT   = 0.2;   // 200 m to board/alight
+const MAX_WALK_KM_TRANSFER = 0.7;   // 700 m between jeepneys
+const MAX_RIDE_KM          = 25;   
+const MIN_RIDE_KM          = 1.5;   
+const AVG_SPEED_KMH        = 20;    
+const MAX_RESULTS          = 30;
+const MAX_TRANSFER_SEARCH  = 15;    
+
+// ===================================================================
+// MAIN: planTrip – ALWAYS search both direct AND transfer routes
+// ===================================================================
+const planTrip = async (req, res) => {
+  try {
+    const { startLat, startLng, endLat, endLng } = req.body;
+
+    if (!startLat || !startLng || !endLat || !endLng) {
+      return res.status(400).json({
+        success: false,
+        error: 'Start and end coordinates are required'
+      });
+    }
+
+    const startPoint = { lat: parseFloat(startLat), lng: parseFloat(startLng) };
+    const endPoint   = { lat: parseFloat(endLat),   lng: parseFloat(endLng) };
+
+    const routesResult = await db.query(`
+      SELECT id, route_name, coordinates 
+      FROM routes 
+      WHERE coordinates IS NOT NULL
+    `);
+
+    console.log(`Found ${routesResult.rows.length} routes in DB`);
+
+    // =================================================================
+    // PROGRESSIVE SEARCH FUNCTION
+    // =================================================================
+    const searchWithMaxRide = async (currentMaxRideKm) => {
+      const directRoutes = [];
+      const transferRoutes = [];
+
+      // =================================================================
+      // 1. DIRECT ROUTES - FIXED DUPLICATES AND SCORING
+      // =================================================================
+      const usedDirectRoutes = new Set();
+      
+      for (const route of routesResult.rows) {
+        if (usedDirectRoutes.has(route.route_name)) continue;
+        
+        const routeCoords = route.coordinates;
+        if (!Array.isArray(routeCoords) || routeCoords.length < 10) continue;
+
+        const startStops = findPracticalStops(startPoint, routeCoords, MAX_WALK_KM_DIRECT);
+        const endStops   = findPracticalStops(endPoint,   routeCoords, MAX_WALK_KM_DIRECT);
+
+        if (startStops.length === 0 || endStops.length === 0) continue;
+
+        let bestRide = null;
+        let bestScore = Infinity;
+
+        for (const startStop of startStops) {
+          for (const endStop of endStops) {
+            if (startStop.segment >= endStop.segment) continue;
+
+            const rideSegment = buildRideSegment(routeCoords, startStop, endStop);
+            const rideKm = calculateRouteDistance(rideSegment);
+
+            if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
+
+            const walkKm = startStop.distance + endStop.distance;
+            
+            // FIXED SCORING: Heavily prioritize minimal walking
+            // If you're close to the route (within 50m), don't walk further!
+            const walkPenalty = startStop.distance < 0.05 ? walkKm * 100 : walkKm * 10;
+            const score = walkPenalty + rideKm;
+
+            if (score < bestScore) {
+              bestScore = score;
+              bestRide = { startStop, endStop, rideKm, rideSegment, score };
+            }
+          }
+        }
+
+        if (bestRide) {
+          const rideMins = (bestRide.rideKm / AVG_SPEED_KMH) * 60;
+          const walkMins = (bestRide.startStop.distance + bestRide.endStop.distance) / 5 * 60;
+          const totalMins = Math.round(rideMins + walkMins);
+
+          directRoutes.push({
+            type: 'direct',
+            route: route.route_name,
+            startWalkDistance: bestRide.startStop.distance,
+            endWalkDistance:   bestRide.endStop.distance,
+            totalWalkDistance: bestRide.startStop.distance + bestRide.endStop.distance,
+            routeDistance:     bestRide.rideKm,
+            estimatedTime:     totalMins,
+            estimatedFare:     calculateFare(bestRide.rideKm),
+            routeSegment:      bestRide.rideSegment,
+            score:             bestRide.score
+          });
+          
+          usedDirectRoutes.add(route.route_name);
+        }
+      }
+
+      // =================================================================
+      // 2. TRANSFER ROUTES – ALWAYS SEARCH
+      // =================================================================
+      console.log('Searching for transfer routes...');
+
+      const startCandidates = routesResult.rows
+        .map(r => ({ route: r, dist: minDistanceToRoute(startPoint, r.coordinates) }))
+        .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, MAX_TRANSFER_SEARCH);
+
+      const endCandidates = routesResult.rows
+        .map(r => ({ route: r, dist: minDistanceToRoute(endPoint, r.coordinates) }))
+        .filter(x => x.dist <= MAX_WALK_KM_DIRECT + 0.3)
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, MAX_TRANSFER_SEARCH);
+
+      console.log(`Start candidates: ${startCandidates.length}, End: ${endCandidates.length}`);
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Transfer search timeout')), 3000)
+      );
+
+      const searchPromise = (async () => {
+        const results = [];
+        const usedTransferCombinations = new Set();
+
+        for (const sCand of startCandidates) {
+          const routeA = sCand.route;
+          const startStopsA = findPracticalStops(startPoint, routeA.coordinates, MAX_WALK_KM_DIRECT);
+          if (startStopsA.length === 0) continue;
+
+          for (const eCand of endCandidates) {
+            if (routeA.id === eCand.route.id) continue;
+            const routeB = eCand.route;
+            const endStopsB = findPracticalStops(endPoint, routeB.coordinates, MAX_WALK_KM_DIRECT);
+            if (endStopsB.length === 0) continue;
+
+            // Find ALL good transfer points, not just the closest
+            const transferPoints = [];
+            for (const pA of routeA.coordinates) {
+              for (const pB of routeB.coordinates) {
+                const walk = haversineDistance(pA[0], pA[1], pB[0], pB[1]);
+                if (walk <= MAX_WALK_KM_TRANSFER) {
+                  transferPoints.push({ pA, pB, walk });
+                }
+              }
+            }
+
+            // Try multiple transfer points to get different route options
+            for (const transferPair of transferPoints.slice(0, 3)) {
+              const bestA = findBestLeg(startStopsA, routeA.coordinates, transferPair.pA, currentMaxRideKm);
+              const bestB = findBestLeg(endStopsB, routeB.coordinates, transferPair.pB, currentMaxRideKm, true);
+              if (!bestA || !bestB) continue;
+
+              const totalWalk = bestA.boarding.distance + transferPair.walk + bestB.alight.distance;
+              const totalRide = bestA.rideKm + bestB.rideKm;
+              
+              const fareA = calculateFare(bestA.rideKm);
+              const fareB = calculateFare(bestB.rideKm);
+              const totalFare = fareA + fareB;
+              
+              const score = totalRide + totalWalk * 2;
+
+              const rideMins = (totalRide / AVG_SPEED_KMH) * 60;
+              const walkMins = (totalWalk / 5) * 60;
+              const totalMins = Math.round(rideMins + walkMins);
+
+              // Create unique key including transfer point to allow multiple routes with same jeepney combo
+              const comboKey = `${routeA.route_name}-${routeB.route_name}-${transferPair.pA[0].toFixed(4)}-${transferPair.pA[1].toFixed(4)}`;
+              
+              if (!usedTransferCombinations.has(comboKey)) {
+                usedTransferCombinations.add(comboKey);
+                
+                results.push({
+                  type: 'transfer',
+                  legs: [
+                    {
+                      route: routeA.route_name,
+                      startWalkDistance: bestA.boarding.distance,
+                      endWalkDistance: transferPair.walk,
+                      routeDistance: bestA.rideKm,
+                      routeSegment: bestA.segment,
+                      estimatedFare: fareA,
+                      boardingPoint: bestA.boarding.point,
+                      alightingPoint: transferPair.pA,
+                      estimatedTime: Math.round((bestA.rideKm / AVG_SPEED_KMH) * 60)
+                    },
+                    {
+                      route: routeB.route_name,
+                      startWalkDistance: transferPair.walk,
+                      endWalkDistance: bestB.alight.distance,
+                      routeDistance: bestB.rideKm,
+                      routeSegment: bestB.segment,
+                      estimatedFare: fareB,
+                      boardingPoint: transferPair.pB,
+                      alightingPoint: bestB.alight.point,
+                      estimatedTime: Math.round((bestB.rideKm / AVG_SPEED_KMH) * 60)
+                    }
+                  ],
+                  totalWalkDistance: totalWalk,
+                  routeDistance: totalRide,
+                  estimatedTime: totalMins,
+                  estimatedFare: totalFare,
+                  transferWalkDistance: transferPair.walk,
+                  transferPoint: {
+                    from: transferPair.pA,
+                    to: transferPair.pB,
+                    walkDistance: transferPair.walk
+                  },
+                  score,
+                  combination: comboKey
+                });
+
+                if (results.length >= MAX_RESULTS * 2) return results;
+              }
+            }
+          }
+        }
+        return results;
+      })();
+
+      try {
+        transferRoutes.push(...await Promise.race([searchPromise, timeoutPromise]));
+      } catch (err) {
+        console.log('Transfer search timeout - returning partial results');
+      }
+
+      return { directRoutes, transferRoutes };
+    };
+
+    // =================================================================
+    // PROGRESSIVE SEARCH EXECUTION
+    // =================================================================
+    let currentMaxRide = MAX_RIDE_KM;
+    let allDirectRoutes = [];
+    let allTransferRoutes = [];
+    let searchIterations = 0;
+    const MAX_ITERATIONS = 30;
+
+    while (searchIterations < MAX_ITERATIONS) {
+      console.log(`Searching with MAX_RIDE_KM = ${currentMaxRide}km`);
+      
+      const { directRoutes, transferRoutes } = await searchWithMaxRide(currentMaxRide);
+      
+      allDirectRoutes = directRoutes;
+      allTransferRoutes = transferRoutes;
+      
+      // Stop if we found enough routes (either direct or transfer)
+      if (allDirectRoutes.length > 0 || allTransferRoutes.length >= 3) {
+        console.log(`Found routes with MAX_RIDE_KM = ${currentMaxRide}km: ${directRoutes.length} direct, ${transferRoutes.length} transfer`);
+        break;
+      }
+      
+      currentMaxRide += 1;
+      searchIterations++;
+      
+      if (currentMaxRide > 50) {
+        console.log('Reached maximum search distance (50km) without finding routes');
+        break;
+      }
+    }
+
+    // =================================================================
+    // 3. FINAL RESPONSE - REMOVE DUPLICATES
+    // =================================================================
+    const uniqueDirectRoutes = [];
+    const seenDirectRoutes = new Set();
+    for (const route of allDirectRoutes) {
+      if (!seenDirectRoutes.has(route.route)) {
+        seenDirectRoutes.add(route.route);
+        uniqueDirectRoutes.push(route);
+      }
+    }
+
+    const uniqueTransferRoutes = [];
+    const seenTransferRoutes = new Set();
+    for (const route of allTransferRoutes) {
+      if (!seenTransferRoutes.has(route.combination)) {
+        seenTransferRoutes.add(route.combination);
+        uniqueTransferRoutes.push(route);
+      }
+    }
+
+    // Combine and sort all routes
+    const allRoutes = uniqueDirectRoutes.concat(uniqueTransferRoutes);
+    allRoutes.sort((a, b) => a.score - b.score);
+
+    res.json({
+      success: true,
+      routes: allRoutes.slice(0, MAX_RESULTS),
+      hasDirectRoutes: uniqueDirectRoutes.length > 0,
+      hasTransferRoutes: uniqueTransferRoutes.length > 0,
+      metadata: {
+        totalDirectRoutes: uniqueDirectRoutes.length,
+        totalTransferRoutes: uniqueTransferRoutes.length,
+        maxRideKmUsed: currentMaxRide,
+        searchArea: { direct: MAX_WALK_KM_DIRECT, transfer: MAX_WALK_KM_TRANSFER }
+      }
+    });
+
+  } catch (error) {
+    console.error('Trip planning error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+};
+
+// ===================================================================
+// HELPER FUNCTIONS
+// ===================================================================
+const minDistanceToRoute = (point, coords) => {
+  let min = Infinity;
+  for (const [lat, lng] of coords) {
+    const d = haversineDistance(point.lat, point.lng, lat, lng);
+    if (d < min) min = d;
+  }
+  return min;
+};
+
+const findBestLeg = (userStops, routeCoords, transferPoint, currentMaxRideKm, reverse = false) => {
+  let best = null;
+  let bestScore = Infinity;
+
+  const transferIdx = routeCoords.findIndex(p =>
+    Math.abs(p[0] - transferPoint[0]) < 1e-6 && Math.abs(p[1] - transferPoint[1]) < 1e-6
+  );
+  if (transferIdx === -1) return null;
+
+  for (const stop of userStops) {
+    const startIdx = reverse ? transferIdx : stop.segment;
+    const endIdx = reverse ? stop.segment : transferIdx;
+    if (startIdx >= endIdx) continue;
+
+    const segment = routeCoords.slice(startIdx, endIdx + 1);
+    const rideKm = calculateRouteDistance(segment);
+    if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
+
+    const score = rideKm + stop.distance * 2;
+    if (score < bestScore) {
+      bestScore = score;
+      best = {
+        boarding: reverse ? { distance: 0, point: transferPoint } : stop,
+        alight: reverse ? stop : { distance: 0, point: transferPoint },
+        rideKm,
+        segment
+      };
+    }
+  }
+  return best;
+};
+
+const findPracticalStops = (userPoint, routeCoords, maxWalkKm) => {
+  const stops = [];
+  for (let i = 0; i < routeCoords.length; i++) {
+    const dist = haversineDistance(userPoint.lat, userPoint.lng, routeCoords[i][0], routeCoords[i][1]);
+    if (dist <= maxWalkKm) {
+      stops.push({ segment: i, point: routeCoords[i], distance: dist });
+    }
+  }
+  return stops;
+};
+
+const buildRideSegment = (coords, startStop, endStop) => {
+  return coords.slice(startStop.segment, endStop.segment + 1);
+};
+
+const calculateRouteDistance = (segment) => {
+  let total = 0;
+  for (let i = 1; i < segment.length; i++) {
+    total += haversineDistance(
+      segment[i-1][0], segment[i-1][1],
+      segment[i][0],   segment[i][1]
+    );
+  }
+  return total;
+};
+
+const calculateFare = (distance) => {
+  const baseFare = 13;
+  const baseKm   = 4;
+  const rate     = 1.8;
+  if (distance <= baseKm) return baseFare;
+  const extraKm = Math.ceil(distance - baseKm);
+  return Math.round(baseFare + extraKm * rate);
+};
+
+// ===================================================================
+// MAPBOX SEARCH
+// ===================================================================
+const searchPlaces = async (req, res) => {
+  try {
+    const { query, lat, lng } = req.query;
+    if (!query || query.length < 2) return res.json({ success: true, features: [] });
+
+    const TOMTOM_API_KEY = 'Ev7u9w9pfeL7JJ0wBHbwNIIzXGNnlK4K';
+    const latLng = lat && lng ? `&lat=${lat}&lon=${lng}` : '&lat=7.1907&lon=125.4553';
+    
+    const url = `https://api.tomtom.com/search/2/search/${encodeURIComponent(query)}.json?key=${TOMTOM_API_KEY}${latLng}&limit=10&countrySet=PH&idxSet=POI`;
+    
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    const features = data.results?.map(place => ({
+      id: place.id,
+      place_name: place.poi?.name + ', ' + place.address?.freeformAddress,
+      text: place.poi?.name,
+      center: [place.position.lon, place.position.lat],
+      address: place.address?.freeformAddress,
+      category: place.poi?.classifications?.[0]?.code
+    })) || [];
+
+    res.json({ success: true, features });
+  } catch (error) {
+    console.error('TomTom error:', error);
+    res.json({ success: true, features: [] });
+  }
+};
+
+// ===================================================================
+// EXPORT
+// ===================================================================
+module.exports = { planTrip, searchPlaces };
