@@ -2346,7 +2346,7 @@ const MAX_RESULTS          = 30;
 const MAX_TRANSFER_SEARCH  = 15;    
 
 // ===================================================================
-// MAIN: planTrip – Search direct first, then transfer if needed
+// MAIN: planTrip – ALWAYS search both direct AND transfer routes
 // ===================================================================
 const planTrip = async (req, res) => {
   try {
@@ -2393,52 +2393,29 @@ const planTrip = async (req, res) => {
 
         if (startStops.length === 0 || endStops.length === 0) continue;
 
-        // Sort stops by distance - closest first
-        startStops.sort((a, b) => a.distance - b.distance);
-        endStops.sort((a, b) => a.distance - b.distance);
-
-        // CRITICAL FIX: For each boarding point, find the FURTHEST valid alighting point
-        // that's still close to destination. Don't alight early!
         let bestRide = null;
         let bestScore = Infinity;
 
         for (const startStop of startStops) {
-          // Find the latest (furthest along route) alighting point that's close to destination
-          let bestEndStopForThisStart = null;
-          
           for (const endStop of endStops) {
             if (startStop.segment >= endStop.segment) continue;
+
+            const rideSegment = buildRideSegment(routeCoords, startStop, endStop);
+            const rideKm = calculateRouteDistance(rideSegment);
+
+            if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
+
+            const walkKm = startStop.distance + endStop.distance;
             
-            // Prefer later stops along the route if they're still close to destination
-            if (!bestEndStopForThisStart || endStop.segment > bestEndStopForThisStart.segment) {
-              bestEndStopForThisStart = endStop;
+            // FIXED SCORING: Heavily prioritize minimal walking
+            // If you're close to the route (within 50m), don't walk further!
+            const walkPenalty = startStop.distance < 0.05 ? walkKm * 100 : walkKm * 10;
+            const score = walkPenalty + rideKm;
+
+            if (score < bestScore) {
+              bestScore = score;
+              bestRide = { startStop, endStop, rideKm, rideSegment, score };
             }
-          }
-          
-          if (!bestEndStopForThisStart) continue;
-          
-          const endStop = bestEndStopForThisStart;
-          if (!bestEndStopForThisStart) continue;
-          
-          const endStop = bestEndStopForThisStart;
-          
-          const rideSegment = buildRideSegment(routeCoords, startStop, endStop);
-          const rideKm = calculateRouteDistance(rideSegment);
-
-          if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
-
-          const walkKm = startStop.distance + endStop.distance;
-          
-          // Prioritize: 1) minimal walking, 2) staying on jeepney longer
-          const boardingPenalty = startStop.distance * 1000;
-          const alightingPenalty = endStop.distance * 1000;
-          const ridePenalty = rideKm * 0.1;
-          
-          const score = boardingPenalty + alightingPenalty + ridePenalty;
-
-          if (score < bestScore) {
-            bestScore = score;
-            bestRide = { startStop, endStop, rideKm, rideSegment, score };
           }
         }
 
@@ -2465,14 +2442,9 @@ const planTrip = async (req, res) => {
       }
 
       // =================================================================
-      // 2. TRANSFER ROUTES – ONLY IF NO DIRECT ROUTES
+      // 2. TRANSFER ROUTES – ALWAYS SEARCH
       // =================================================================
-      if (directRoutes.length > 0) {
-        console.log(`Found ${directRoutes.length} direct routes, skipping transfer search`);
-        return { directRoutes, transferRoutes: [] };
-      }
-      
-      console.log('No direct routes found, searching for transfer routes...');
+      console.log('Searching for transfer routes...');
 
       const startCandidates = routesResult.rows
         .map(r => ({ route: r, dist: minDistanceToRoute(startPoint, r.coordinates) }))
