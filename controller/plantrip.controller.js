@@ -2346,7 +2346,7 @@ const MAX_RESULTS          = 30;
 const MAX_TRANSFER_SEARCH  = 15;    
 
 // ===================================================================
-// MAIN: planTrip – ALWAYS search both direct AND transfer routes
+// MAIN: planTrip – Search direct first, then transfer if needed
 // ===================================================================
 const planTrip = async (req, res) => {
   try {
@@ -2442,9 +2442,14 @@ const planTrip = async (req, res) => {
       }
 
       // =================================================================
-      // 2. TRANSFER ROUTES – ALWAYS SEARCH
+      // 2. TRANSFER ROUTES – ONLY IF NO DIRECT ROUTES
       // =================================================================
-      console.log('Searching for transfer routes...');
+      if (directRoutes.length > 0) {
+        console.log(`Found ${directRoutes.length} direct routes, skipping transfer search`);
+        return { directRoutes, transferRoutes: [] };
+      }
+      
+      console.log('No direct routes found, searching for transfer routes...');
 
       const startCandidates = routesResult.rows
         .map(r => ({ route: r, dist: minDistanceToRoute(startPoint, r.coordinates) }))
