@@ -2339,7 +2339,7 @@ const { haversineDistance } = require('../utils/geoUtils');
 // ===================================================================
 const MAX_WALK_KM_DIRECT   = 0.2;   // 200 m to board/alight
 const MAX_WALK_KM_TRANSFER = 0.7;   // 700 m between jeepneys
-const MAX_RIDE_KM          = 15;   
+const MAX_RIDE_KM          = 25;   
 const MIN_RIDE_KM          = 1.5;   
 const AVG_SPEED_KMH        = 20;    
 const MAX_RESULTS          = 30;
@@ -2393,6 +2393,10 @@ const planTrip = async (req, res) => {
 
         if (startStops.length === 0 || endStops.length === 0) continue;
 
+        // Sort stops by distance - closest first
+        startStops.sort((a, b) => a.distance - b.distance);
+        endStops.sort((a, b) => a.distance - b.distance);
+
         let bestRide = null;
         let bestScore = Infinity;
 
@@ -2407,10 +2411,14 @@ const planTrip = async (req, res) => {
 
             const walkKm = startStop.distance + endStop.distance;
             
-            // FIXED SCORING: Heavily prioritize minimal walking
-            // If you're close to the route (within 50m), don't walk further!
-            const walkPenalty = startStop.distance < 0.05 ? walkKm * 100 : walkKm * 10;
-            const score = walkPenalty + rideKm;
+            // CRITICAL FIX: Choose the boarding point closest to user,
+            // and the alighting point closest to destination
+            // This prevents early alighting when jeepney continues to destination
+            const boardingPenalty = startStop.distance * 1000;  // Minimize walk to board
+            const alightingPenalty = endStop.distance * 1000;    // Minimize walk from alight
+            const ridePenalty = rideKm * 0.1;                    // Small penalty for longer rides
+            
+            const score = boardingPenalty + alightingPenalty + ridePenalty;
 
             if (score < bestScore) {
               bestScore = score;
