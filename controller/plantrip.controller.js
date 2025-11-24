@@ -2397,33 +2397,48 @@ const planTrip = async (req, res) => {
         startStops.sort((a, b) => a.distance - b.distance);
         endStops.sort((a, b) => a.distance - b.distance);
 
+        // CRITICAL FIX: For each boarding point, find the FURTHEST valid alighting point
+        // that's still close to destination. Don't alight early!
         let bestRide = null;
         let bestScore = Infinity;
 
         for (const startStop of startStops) {
+          // Find the latest (furthest along route) alighting point that's close to destination
+          let bestEndStopForThisStart = null;
+          
           for (const endStop of endStops) {
             if (startStop.segment >= endStop.segment) continue;
-
-            const rideSegment = buildRideSegment(routeCoords, startStop, endStop);
-            const rideKm = calculateRouteDistance(rideSegment);
-
-            if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
-
-            const walkKm = startStop.distance + endStop.distance;
             
-            // CRITICAL FIX: Choose the boarding point closest to user,
-            // and the alighting point closest to destination
-            // This prevents early alighting when jeepney continues to destination
-            const boardingPenalty = startStop.distance * 1000;  // Minimize walk to board
-            const alightingPenalty = endStop.distance * 1000;    // Minimize walk from alight
-            const ridePenalty = rideKm * 0.1;                    // Small penalty for longer rides
-            
-            const score = boardingPenalty + alightingPenalty + ridePenalty;
-
-            if (score < bestScore) {
-              bestScore = score;
-              bestRide = { startStop, endStop, rideKm, rideSegment, score };
+            // Prefer later stops along the route if they're still close to destination
+            if (!bestEndStopForThisStart || endStop.segment > bestEndStopForThisStart.segment) {
+              bestEndStopForThisStart = endStop;
             }
+          }
+          
+          if (!bestEndStopForThisStart) continue;
+          
+          const endStop = bestEndStopForThisStart;
+          if (!bestEndStopForThisStart) continue;
+          
+          const endStop = bestEndStopForThisStart;
+          
+          const rideSegment = buildRideSegment(routeCoords, startStop, endStop);
+          const rideKm = calculateRouteDistance(rideSegment);
+
+          if (rideKm < MIN_RIDE_KM || rideKm > currentMaxRideKm) continue;
+
+          const walkKm = startStop.distance + endStop.distance;
+          
+          // Prioritize: 1) minimal walking, 2) staying on jeepney longer
+          const boardingPenalty = startStop.distance * 1000;
+          const alightingPenalty = endStop.distance * 1000;
+          const ridePenalty = rideKm * 0.1;
+          
+          const score = boardingPenalty + alightingPenalty + ridePenalty;
+
+          if (score < bestScore) {
+            bestScore = score;
+            bestRide = { startStop, endStop, rideKm, rideSegment, score };
           }
         }
 
