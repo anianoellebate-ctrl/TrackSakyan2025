@@ -1902,7 +1902,7 @@ const { haversineDistance } = require('../utils/geoUtils');
 // ===================================================================
 // CONFIGURATION – DAVAO REALITY
 // ===================================================================
-const MAX_WALK_KM_DIRECT   = 0.2;   // 200 m to board/alight
+const MAX_WALK_KM_DIRECT   = 0.7;   // 200 m to board/alight
 const MAX_WALK_KM_TRANSFER = 0.7;   // 700 m between jeepneys
 const MAX_RIDE_KM          = 10;   
 const MIN_RIDE_KM          = 1.5;   
