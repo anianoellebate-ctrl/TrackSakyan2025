@@ -2337,7 +2337,7 @@ const { haversineDistance } = require('../utils/geoUtils');
 // CONFIGURATION – DAVAO REALITY
 // ===================================================================
 const INITIAL_WALK_KM_DIRECT   = 0.1;   // Start from 0.1 km
-const INITIAL_WALK_KM_TRANSFER = 0.1;   // Start from 0.1 km
+const MAX_WALK_KM_TRANSFER = 0.7;   // Keep transfer constant
 const MAX_RIDE_KM          = 10;   
 const MIN_RIDE_KM          = 1.5;   
 const AVG_SPEED_KMH        = 20;    
@@ -2372,7 +2372,7 @@ const planTrip = async (req, res) => {
     // =================================================================
     // PROGRESSIVE SEARCH FUNCTION
     // =================================================================
-    const searchWithMaxRideAndWalk = async (currentMaxRideKm, currentMaxWalkDirect, currentMaxWalkTransfer) => {
+    const searchWithMaxRideAndWalk = async (currentMaxRideKm, currentMaxWalkDirect) => {
       const directRoutes = [];
       const transferRoutes = [];
 
@@ -2483,7 +2483,7 @@ const planTrip = async (req, res) => {
               for (const pA of routeA.coordinates) {
                 for (const pB of routeB.coordinates) {
                   const walk = haversineDistance(pA[0], pA[1], pB[0], pB[1]);
-                  if (walk < bestWalk && walk <= currentMaxWalkTransfer) {
+                  if (walk < bestWalk && walk <= MAX_WALK_KM_TRANSFER) {
                     bestWalk = walk;
                     bestPair = { pA, pB, walk };
                   }
@@ -2577,28 +2577,26 @@ const planTrip = async (req, res) => {
     // =================================================================
     let currentMaxRide = MAX_RIDE_KM;
     let currentMaxWalkDirect = INITIAL_WALK_KM_DIRECT;
-    let currentMaxWalkTransfer = INITIAL_WALK_KM_TRANSFER;
     let allDirectRoutes = [];
     let allTransferRoutes = [];
     let searchIterations = 0;
     const MAX_ITERATIONS = 30;
 
     while (searchIterations < MAX_ITERATIONS) {
-      console.log(`Searching with MAX_RIDE_KM = ${currentMaxRide}km, MAX_WALK_DIRECT = ${currentMaxWalkDirect}km, MAX_WALK_TRANSFER = ${currentMaxWalkTransfer}km`);
+      console.log(`Searching with MAX_RIDE_KM = ${currentMaxRide}km, MAX_WALK_DIRECT = ${currentMaxWalkDirect}km`);
       
-      const { directRoutes, transferRoutes } = await searchWithMaxRideAndWalk(currentMaxRide, currentMaxWalkDirect, currentMaxWalkTransfer);
+      const { directRoutes, transferRoutes } = await searchWithMaxRideAndWalk(currentMaxRide, currentMaxWalkDirect);
       
       if (directRoutes.length > 0 || transferRoutes.length > 0) {
         allDirectRoutes = directRoutes;
         allTransferRoutes = transferRoutes;
-        console.log(`Found routes with MAX_RIDE_KM = ${currentMaxRide}km, MAX_WALK_DIRECT = ${currentMaxWalkDirect}km, MAX_WALK_TRANSFER = ${currentMaxWalkTransfer}km: ${directRoutes.length} direct, ${transferRoutes.length} transfer`);
+        console.log(`Found routes with MAX_RIDE_KM = ${currentMaxRide}km, MAX_WALK_DIRECT = ${currentMaxWalkDirect}km: ${directRoutes.length} direct, ${transferRoutes.length} transfer`);
         break;
       }
       
-      // Increase both ride and walk distances progressively
+      // Increase both ride and direct walk distances progressively
       currentMaxRide += 1;
       currentMaxWalkDirect += 0.1;
-      currentMaxWalkTransfer += 0.1;
       searchIterations++;
       
       if (currentMaxRide > 50 || currentMaxWalkDirect > 2.0) {
@@ -2643,8 +2641,8 @@ const planTrip = async (req, res) => {
         totalTransferRoutes: uniqueTransferRoutes.length,
         maxRideKmUsed: currentMaxRide,
         maxWalkDirectUsed: currentMaxWalkDirect,
-        maxWalkTransferUsed: currentMaxWalkTransfer,
-        searchArea: { direct: currentMaxWalkDirect, transfer: currentMaxWalkTransfer }
+        maxWalkTransferUsed: MAX_WALK_KM_TRANSFER,
+        searchArea: { direct: currentMaxWalkDirect, transfer: MAX_WALK_KM_TRANSFER }
       }
     });
 
