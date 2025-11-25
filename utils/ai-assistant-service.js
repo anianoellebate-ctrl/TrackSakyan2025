@@ -339,7 +339,7 @@ class JeepneyAIAssistant {
             console.error('AI Assistant error:', error);
             return {
                 success: false,
-                voiceResponse: "The machine learning system is currently unavailable."
+                voiceResponse: "I'm still learning about jeepney patterns in your area. As more people use the app, I'll get better at predicting when and where jeepneys are available."
             };
         }
     }
