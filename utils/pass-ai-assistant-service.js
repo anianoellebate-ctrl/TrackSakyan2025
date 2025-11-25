@@ -63,7 +63,7 @@ class PassengerCongestionAIAssistant {
             console.error('AI Assistant error:', error);
             return {
                 success: false,
-                voiceResponse: "The passenger congestion prediction system is currently unavailable."
+                voiceResponse: "I'm still learning about passenger demand patterns in your area. As more trips are recorded in the app, I'll get better at predicting where and when you'll find more passengers.",
             };
         }
     }
