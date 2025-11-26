@@ -4,7 +4,7 @@ const { supabase } = require('../database');
 const getAllTrips = async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('drivers')
+      .from('trips')
       .select('*'); // This gets EVERY column and EVERY row
 
     if (error) {
