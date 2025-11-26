@@ -86,12 +86,11 @@ async function postLoginSetup(userId, profile) {
   try {
     if (!profile) return;
 
-    // Driver setup (same logic as partner's but converted to backend)
+    // Driver setup
     if (profile.plateNumber) {
       let licenseUrl = null;
 
-      // If profile.plateImage is a base64 string, upload it
-      if (profile.plateImage && profile.plateImage.startsWith('data:image')) {
+      if (profile.plateImage) {
         const base64 = profile.plateImage.replace(/^data:image\/\w+;base64,/, '');
         const arrayBuffer = Buffer.from(base64, 'base64');
         const fileName = `${userId}/license.jpg`;
@@ -103,12 +102,9 @@ async function postLoginSetup(userId, profile) {
 
         const { data: publicUrlData } = supabase.storage.from("plates").getPublicUrl(fileName);
         licenseUrl = publicUrlData?.publicUrl ?? null;
-      } else {
-        // If it's already a URL, use it directly
-        licenseUrl = profile.plateImage;
       }
 
-      // Ensure row exists (UPSERT) - same as partner's
+      // Ensure row exists (UPSERT) - Updated with all partner fields
       const { error: insertError } = await supabase.from("drivers").upsert([{
         driver_id: userId,
         first_name: profile.firstName,
@@ -127,7 +123,7 @@ async function postLoginSetup(userId, profile) {
       console.log("Driver profile setup completed:", userId);
     }
 
-    // Commuter setup (keep partner's logic)
+    // Commuter setup
     else {
       let idUrl = null;
 
