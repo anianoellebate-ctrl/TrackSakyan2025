@@ -205,14 +205,14 @@ const driverSignupController = {
       email,
       plateNumber,
       licenseNumber,
-      licenseImage, // This should be base64 string
+      licenseImage, // This is the image URI/URL
       password,
       confirmPassword,
       jeepneyType
     } = req.body;
 
     try {
-      // Validation
+      // Validation (same as partner's frontend validation)
       if (!firstName?.trim() || !lastName?.trim() || !email?.trim()) {
         return res.status(400).json({ 
           success: false, 
@@ -270,20 +270,11 @@ const driverSignupController = {
         });
       }
 
-      // Check payload size to prevent 413 error
-      const payloadSize = Buffer.byteLength(JSON.stringify(req.body), 'utf8');
-      if (payloadSize > 4.5 * 1024 * 1024) { // 4.5MB limit
-        return res.status(413).json({
-          success: false,
-          error: "Image too large. Please upload a smaller image."
-        });
-      }
-
-      // AUTOMATIC CAPACITY CALCULATION
+      // AUTOMATIC CAPACITY CALCULATION (like partner wanted)
       const capacity_max = jeepneyType === 'Traditional' ? 22 : 18;
-      const puv_type = 'jeepney'; // AUTOMATICALLY SET TO JEEPNEY
+      const puv_type = 'jeepney'; // Automatically set to jeepney
 
-      // 1. Create auth user
+      // 1. Create auth user (same as partner)
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(),
         password: password,
@@ -303,7 +294,7 @@ const driverSignupController = {
         throw new Error("Signup failed. Try again.");
       }
 
-      // 2. Immediately sign in to get session
+      // 2. Sign in immediately (same as partner)
       const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
         email: email.trim().toLowerCase(),
         password: password,
@@ -311,18 +302,17 @@ const driverSignupController = {
 
       if (loginError) throw loginError;
 
-      // 3. Run postLoginSetup with driver profile
+      // 3. Run postLoginSetup with driver profile (SAME AS PARTNER)
       if (loginData.user) {
-        const profile = { 
-          firstName: firstName.trim(), 
-          lastName: lastName.trim(), 
-          email: email.trim().toLowerCase(), 
-          plateNumber: plateNumber.toUpperCase(), 
-          licenseNumber: licenseNumber.trim(), 
-          licenseImage: licenseImage, 
-          capacity_max,
-          puv_type,
-          jeepneyType
+        const profile = {
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          email: email.trim().toLowerCase(),
+          plateNumber: plateNumber.toUpperCase(),
+          licenseNumber: licenseNumber.trim(),
+          plateImage: licenseImage, // Pass the image URI/URL
+          capacity_max: capacity_max,
+          puv_type: puv_type,
         };
         await postLoginSetup(loginData.user.id, profile);
       }
