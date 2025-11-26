@@ -205,21 +205,22 @@ const driverSignupController = {
       email,
       plateNumber,
       licenseNumber,
-      licenseImage,
+      licenseImage, // This should be base64 string
       password,
       confirmPassword,
-      jeepneyType // CHANGED: Now accepts 'Traditional' or 'Multicab'
+      jeepneyType
     } = req.body;
 
     try {
-      if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+      // Validation
+      if (!firstName?.trim() || !lastName?.trim() || !email?.trim()) {
         return res.status(400).json({ 
           success: false, 
           error: "All fields are required." 
         });
       }
 
-      if (!licenseNumber.trim()) {
+      if (!licenseNumber?.trim()) {
         return res.status(400).json({ 
           success: false, 
           error: "License Number is required." 
@@ -255,7 +256,7 @@ const driverSignupController = {
       }
 
       const plateRegex = /^([A-Z]{3}\s\d{3,4}|[A-Z]{3}\s\d{2}[A-Z]|[0-9]{3}\s[A-Z]{3})$/;
-      if (!plateRegex.test(plateNumber.toUpperCase())) {
+      if (!plateRegex.test(plateNumber?.toUpperCase())) {
         return res.status(400).json({ 
           success: false, 
           error: "Invalid Plate Number, Accepted formats: ABC 123, ABC 1234, ABC 12D, or 123 ABC." 
@@ -269,34 +270,56 @@ const driverSignupController = {
         });
       }
 
+      // Check payload size to prevent 413 error
+      const payloadSize = Buffer.byteLength(JSON.stringify(req.body), 'utf8');
+      if (payloadSize > 4.5 * 1024 * 1024) { // 4.5MB limit
+        return res.status(413).json({
+          success: false,
+          error: "Image too large. Please upload a smaller image."
+        });
+      }
+
       // AUTOMATIC CAPACITY CALCULATION
       const capacity_max = jeepneyType === 'Traditional' ? 22 : 18;
       const puv_type = 'jeepney'; // AUTOMATICALLY SET TO JEEPNEY
 
       // 1. Create auth user
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
+        email: email.trim().toLowerCase(),
+        password: password,
       });
-      if (signUpError) throw signUpError;
-      if (!signUpData.user) throw new Error("Signup failed. Try again.");
 
-      // 2. Immediately sign in
+      if (signUpError) {
+        if (signUpError.message.includes('already registered')) {
+          return res.status(400).json({
+            success: false,
+            error: "Email already registered. Please use a different email."
+          });
+        }
+        throw signUpError;
+      }
+
+      if (!signUpData.user) {
+        throw new Error("Signup failed. Try again.");
+      }
+
+      // 2. Immediately sign in to get session
       const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+        email: email.trim().toLowerCase(),
+        password: password,
       });
+
       if (loginError) throw loginError;
 
       // 3. Run postLoginSetup with driver profile
       if (loginData.user) {
         const profile = { 
-          firstName, 
-          lastName, 
-          email, 
-          plateNumber, 
-          licenseNumber, 
-          licenseImage, 
+          firstName: firstName.trim(), 
+          lastName: lastName.trim(), 
+          email: email.trim().toLowerCase(), 
+          plateNumber: plateNumber.toUpperCase(), 
+          licenseNumber: licenseNumber.trim(), 
+          licenseImage: licenseImage, 
           capacity_max,
           puv_type,
           jeepneyType
@@ -307,8 +330,14 @@ const driverSignupController = {
       res.json({
         success: true,
         message: "Sign up successful! Driver account created, wait for the admin to verify.",
-        user: loginData.user,
-        session: loginData.session
+        user: {
+          id: loginData.user.id,
+          email: loginData.user.email
+        },
+        session: {
+          access_token: loginData.session.access_token,
+          refresh_token: loginData.session.refresh_token
+        }
       });
 
     } catch (error) {
@@ -322,5 +351,3 @@ const driverSignupController = {
 };
 
 module.exports = driverSignupController;
-
-
