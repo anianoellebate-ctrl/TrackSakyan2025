@@ -114,7 +114,8 @@ async function postLoginSetup(userId, profile) {
         license_no: profile.licenseNumber,
         license_image_url: licenseUrl,
         capacity_max: profile.capacity_max,
-        puv_type: profile.puv_type,
+        puv_type: profile.puv_type, // Automatically set to 'jeepney'
+        jeepney_type: profile.jeepneyType, // Store the specific type (Traditional/Multicab)
         created_at: new Date().toISOString(),
       }], { onConflict: "driver_id" });
 
