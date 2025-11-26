@@ -205,22 +205,22 @@ const driverSignupController = {
       email,
       plateNumber,
       licenseNumber,
-      licenseImage, // This is the image URI/URL
+      licenseImage,
       password,
       confirmPassword,
       jeepneyType
     } = req.body;
 
     try {
-      // Validation (same as partner's frontend validation)
-      if (!firstName?.trim() || !lastName?.trim() || !email?.trim()) {
+      // Same validations as partner project
+      if (!firstName.trim() || !lastName.trim() || !email.trim()) {
         return res.status(400).json({ 
           success: false, 
           error: "All fields are required." 
         });
       }
 
-      if (!licenseNumber?.trim()) {
+      if (!licenseNumber.trim()) {
         return res.status(400).json({ 
           success: false, 
           error: "License Number is required." 
@@ -256,10 +256,10 @@ const driverSignupController = {
       }
 
       const plateRegex = /^([A-Z]{3}\s\d{3,4}|[A-Z]{3}\s\d{2}[A-Z]|[0-9]{3}\s[A-Z]{3})$/;
-      if (!plateRegex.test(plateNumber?.toUpperCase())) {
+      if (!plateRegex.test(plateNumber.toUpperCase())) {
         return res.status(400).json({ 
           success: false, 
-          error: "Invalid Plate Number, Accepted formats: ABC 123, ABC 1234, ABC 12D, or 123 ABC." 
+          error: "Invalid Plate Number, accepted formats: ABC 123, ABC 1234, ABC 12D, or 123 ABC." 
         });
       }
 
@@ -270,47 +270,34 @@ const driverSignupController = {
         });
       }
 
-      // AUTOMATIC CAPACITY CALCULATION (like partner wanted)
+      // AUTOMATIC CAPACITY CALCULATION (Traditional: 22, Multicab: 18)
       const capacity_max = jeepneyType === 'Traditional' ? 22 : 18;
       const puv_type = 'jeepney'; // Automatically set to jeepney
 
       // 1. Create auth user (same as partner)
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: email.trim().toLowerCase(),
-        password: password,
+        email,
+        password,
       });
+      if (signUpError) throw signUpError;
+      if (!signUpData.user) throw new Error("Signup failed. Try again.");
 
-      if (signUpError) {
-        if (signUpError.message.includes('already registered')) {
-          return res.status(400).json({
-            success: false,
-            error: "Email already registered. Please use a different email."
-          });
-        }
-        throw signUpError;
-      }
-
-      if (!signUpData.user) {
-        throw new Error("Signup failed. Try again.");
-      }
-
-      // 2. Sign in immediately (same as partner)
+      // 2. Immediately sign in (same as partner)
       const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
-        password: password,
+        email,
+        password,
       });
-
       if (loginError) throw loginError;
 
-      // 3. Run postLoginSetup with driver profile (SAME AS PARTNER)
+      // 3. Run postLoginSetup with driver profile (same as partner)
       if (loginData.user) {
         const profile = {
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          email: email.trim().toLowerCase(),
-          plateNumber: plateNumber.toUpperCase(),
-          licenseNumber: licenseNumber.trim(),
-          plateImage: licenseImage, // Pass the image URI/URL
+          firstName,
+          lastName,
+          email,
+          plateNumber: plateNumber,
+          licenseNumber: licenseNumber,
+          plateImage: licenseImage,
           capacity_max: capacity_max,
           puv_type: puv_type,
         };
@@ -320,14 +307,8 @@ const driverSignupController = {
       res.json({
         success: true,
         message: "Sign up successful! Driver account created, wait for the admin to verify.",
-        user: {
-          id: loginData.user.id,
-          email: loginData.user.email
-        },
-        session: {
-          access_token: loginData.session.access_token,
-          refresh_token: loginData.session.refresh_token
-        }
+        user: loginData.user,
+        session: loginData.session
       });
 
     } catch (error) {
