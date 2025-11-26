@@ -208,8 +208,7 @@ const driverSignupController = {
       licenseImage,
       password,
       confirmPassword,
-      puv_type,
-      capacity
+      jeepneyType // CHANGED: Now accepts 'Traditional' or 'Multicab'
     } = req.body;
 
     try {
@@ -227,24 +226,17 @@ const driverSignupController = {
         });
       }
 
-      if (!capacity || !capacity.trim()) {
+      if (!jeepneyType) {
         return res.status(400).json({ 
           success: false, 
-          error: "Capacity is required." 
+          error: "Please select jeepney type." 
         });
       }
 
-      if (!puv_type) {
+      if (!['Traditional', 'Multicab'].includes(jeepneyType)) {
         return res.status(400).json({ 
           success: false, 
-          error: "Please select a PUV category." 
-        });
-      }
-
-      if (!['jeepney', 'taxi'].includes(puv_type)) {
-        return res.status(400).json({ 
-          success: false, 
-          error: "Invalid PUV category selected." 
+          error: "Invalid jeepney type selected." 
         });
       }
 
@@ -277,14 +269,9 @@ const driverSignupController = {
         });
       }
 
-      // CAPACITY VALIDATION
-      const capacityNum = Number(capacity);
-      if (isNaN(capacityNum) || capacityNum > 18 || capacityNum < 1) {
-        return res.status(400).json({ 
-          success: false, 
-          error: "Capacity must be a valid number between 1 and 18." 
-        });
-      }
+      // AUTOMATIC CAPACITY CALCULATION
+      const capacity_max = jeepneyType === 'Traditional' ? 22 : 18;
+      const puv_type = 'jeepney'; // AUTOMATICALLY SET TO JEEPNEY
 
       // 1. Create auth user
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
@@ -310,8 +297,9 @@ const driverSignupController = {
           plateNumber, 
           licenseNumber, 
           licenseImage, 
-          capacity_max: capacityNum,
-          puv_type
+          capacity_max,
+          puv_type,
+          jeepneyType
         };
         await postLoginSetup(loginData.user.id, profile);
       }
@@ -334,3 +322,5 @@ const driverSignupController = {
 };
 
 module.exports = driverSignupController;
+
+
