@@ -64,7 +64,7 @@ app.use('/api/v1/check', check);
 app.use('/api/v1/plantrip', plantripRouter);
 app.use('/api/v1/passenger-ml', congestionRouter);
 app.use('/api/v1/jeepney-ml', jeepneydensityRouter);
-app.use('/api/v1/forgot-password', forgotpasswordRouter);
+app.use('/api/v1/forgotpassword', forgotpasswordRouter);
 
 
 
