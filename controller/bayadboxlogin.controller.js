@@ -1327,7 +1327,7 @@ const authController = {
         if (puvType !== 'jeepney') {
           return res.status(403).json({
             success: false,
-            error: 'This app is only available for Jeepney drivers. Your PUV type is: ' + driverExists.puv_type
+            error: 'Currently, this app is specifically designed for Jeepney drivers. We appreciate your interest and hope to expand to other PUV types in the future.'
           });
         }
       }
