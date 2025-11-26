@@ -30,6 +30,7 @@ const check = require('./routes/check.router');
 const plantripRouter = require('./routes/plantrip.router');
 const congestionRouter = require('./routes/congestion.router');
 const jeepneydensityRouter = require('./routes/jeepneydensity.router');
+const forgotpasswordRouter = require('./routes/forgotpassword.router');
 
 
 
@@ -63,6 +64,7 @@ app.use('/api/v1/check', check);
 app.use('/api/v1/plantrip', plantripRouter);
 app.use('/api/v1/passenger-ml', congestionRouter);
 app.use('/api/v1/jeepney-ml', jeepneydensityRouter);
+app.use('/api/v1/forgot-password', forgotpasswordRouter);
 
 
 
