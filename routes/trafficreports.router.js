@@ -23,4 +23,7 @@ router.get('/comments/:comment_id/likes', trafficController.getCommentLikes);
 router.post('/comments/:comment_id/replies', trafficController.addReply);
 router.get('/comments/:comment_id/replies', trafficController.getReplies);
 
+router.get('/my-posts/:email', trafficController.getMyPosts);
+router.delete('/:traffic_report_id', trafficController.deleteMyPost);
+
 module.exports = router;
