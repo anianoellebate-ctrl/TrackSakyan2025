@@ -91,13 +91,22 @@ async function postLoginSetup(userId, profile) {
       let licenseUrl = null;
 
       if (profile.licenseImage) {
-        const base64 = profile.licenseImage.replace(/^data:image\/\w+;base64,/, '');
-        const arrayBuffer = Buffer.from(base64, 'base64');
+        // Remove data URL prefix if present
+        let base64Data = profile.licenseImage;
+        if (base64Data.startsWith('data:image')) {
+          base64Data = base64Data.replace(/^data:image\/\w+;base64,/, '');
+        }
+        
+        const arrayBuffer = Buffer.from(base64Data, 'base64');
         const fileName = `${userId}/license.jpg`;
 
         const { error: storageError } = await supabase.storage
           .from("plates")
-          .upload(fileName, arrayBuffer, { contentType: "image/jpeg", upsert: true });
+          .upload(fileName, arrayBuffer, { 
+            contentType: "image/jpeg", 
+            upsert: true 
+          });
+          
         if (storageError) throw storageError;
 
         const { data: publicUrlData } = supabase.storage.from("plates").getPublicUrl(fileName);
@@ -114,8 +123,8 @@ async function postLoginSetup(userId, profile) {
         license_no: profile.licenseNumber,
         license_image_url: licenseUrl,
         capacity_max: profile.capacity_max,
-        puv_type: profile.puv_type, // Automatically set to 'jeepney'
-        jeepney_type: profile.jeepneyType, // Store the specific type (Traditional/Multicab)
+        puv_type: profile.puv_type,
+        jeepney_type: profile.jeepneyType,
         created_at: new Date().toISOString(),
       }], { onConflict: "driver_id" });
 
@@ -124,13 +133,17 @@ async function postLoginSetup(userId, profile) {
       console.log("Driver profile setup completed:", userId);
     }
 
-    // Commuter setup
+    // Commuter setup (keep this for future use)
     else {
       let idUrl = null;
 
       if (profile.idType && profile.idType !== "Regular" && profile.idImage) {
-        const base64 = profile.idImage.replace(/^data:image\/\w+;base64,/, '');
-        const arrayBuffer = Buffer.from(base64, 'base64');
+        let base64Data = profile.idImage;
+        if (base64Data.startsWith('data:image')) {
+          base64Data = base64Data.replace(/^data:image\/\w+;base64,/, '');
+        }
+        
+        const arrayBuffer = Buffer.from(base64Data, 'base64');
         const safeType = profile.idType.replace(/\s+/g, "_");
         const fileName = `${userId}/${safeType}.jpg`;
 
