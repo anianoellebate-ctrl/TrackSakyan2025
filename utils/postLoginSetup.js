@@ -86,10 +86,9 @@ async function postLoginSetup(userId, profile) {
   try {
     if (!profile) return;
 
-    // Driver setup
+    // Driver setup - NOW USES URL DIRECTLY
     if (profile.plateNumber) {
-      // Since image is already uploaded by frontend, just use the URL
-      const licenseUrl = profile.plateImage;
+      const licenseUrl = profile.plateImage; // Already a URL from upload endpoint
 
       // Ensure row exists (UPSERT)
       const { error: insertError } = await supabase.from("drivers").upsert([{
@@ -99,7 +98,7 @@ async function postLoginSetup(userId, profile) {
         email: profile.email,
         plate_no: profile.plateNumber,
         license_no: profile.licenseNumber,
-        license_image_url: licenseUrl,
+        license_image_url: licenseUrl, // Use the URL directly
         capacity_max: profile.capacity_max,
         puv_type: profile.puv_type,
         created_at: new Date().toISOString(),
