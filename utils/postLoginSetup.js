@@ -88,23 +88,10 @@ async function postLoginSetup(userId, profile) {
 
     // Driver setup
     if (profile.plateNumber) {
-      let licenseUrl = null;
+      // Since image is already uploaded by frontend, just use the URL
+      const licenseUrl = profile.plateImage;
 
-      if (profile.plateImage) {
-        const base64 = profile.plateImage.replace(/^data:image\/\w+;base64,/, '');
-        const arrayBuffer = Buffer.from(base64, 'base64');
-        const fileName = `${userId}/license.jpg`;
-
-        const { error: storageError } = await supabase.storage
-          .from("plates")
-          .upload(fileName, arrayBuffer, { contentType: "image/jpeg", upsert: true });
-        if (storageError) throw storageError;
-
-        const { data: publicUrlData } = supabase.storage.from("plates").getPublicUrl(fileName);
-        licenseUrl = publicUrlData?.publicUrl ?? null;
-      }
-
-      // Ensure row exists (UPSERT) - Updated with all partner fields
+      // Ensure row exists (UPSERT)
       const { error: insertError } = await supabase.from("drivers").upsert([{
         driver_id: userId,
         first_name: profile.firstName,
