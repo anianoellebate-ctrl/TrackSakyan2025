@@ -86,34 +86,29 @@ async function postLoginSetup(userId, profile) {
   try {
     if (!profile) return;
 
-    // Driver setup
+    // Driver setup (same logic as partner's but converted to backend)
     if (profile.plateNumber) {
       let licenseUrl = null;
 
-      if (profile.licenseImage) {
-        // Remove data URL prefix if present
-        let base64Data = profile.licenseImage;
-        if (base64Data.startsWith('data:image')) {
-          base64Data = base64Data.replace(/^data:image\/\w+;base64,/, '');
-        }
-        
-        const arrayBuffer = Buffer.from(base64Data, 'base64');
+      // If profile.plateImage is a base64 string, upload it
+      if (profile.plateImage && profile.plateImage.startsWith('data:image')) {
+        const base64 = profile.plateImage.replace(/^data:image\/\w+;base64,/, '');
+        const arrayBuffer = Buffer.from(base64, 'base64');
         const fileName = `${userId}/license.jpg`;
 
         const { error: storageError } = await supabase.storage
           .from("plates")
-          .upload(fileName, arrayBuffer, { 
-            contentType: "image/jpeg", 
-            upsert: true 
-          });
-          
+          .upload(fileName, arrayBuffer, { contentType: "image/jpeg", upsert: true });
         if (storageError) throw storageError;
 
         const { data: publicUrlData } = supabase.storage.from("plates").getPublicUrl(fileName);
         licenseUrl = publicUrlData?.publicUrl ?? null;
+      } else {
+        // If it's already a URL, use it directly
+        licenseUrl = profile.plateImage;
       }
 
-      // Ensure row exists (UPSERT)
+      // Ensure row exists (UPSERT) - same as partner's
       const { error: insertError } = await supabase.from("drivers").upsert([{
         driver_id: userId,
         first_name: profile.firstName,
@@ -124,7 +119,6 @@ async function postLoginSetup(userId, profile) {
         license_image_url: licenseUrl,
         capacity_max: profile.capacity_max,
         puv_type: profile.puv_type,
-        jeepney_type: profile.jeepneyType,
         created_at: new Date().toISOString(),
       }], { onConflict: "driver_id" });
 
@@ -133,17 +127,13 @@ async function postLoginSetup(userId, profile) {
       console.log("Driver profile setup completed:", userId);
     }
 
-    // Commuter setup (keep this for future use)
+    // Commuter setup (keep partner's logic)
     else {
       let idUrl = null;
 
       if (profile.idType && profile.idType !== "Regular" && profile.idImage) {
-        let base64Data = profile.idImage;
-        if (base64Data.startsWith('data:image')) {
-          base64Data = base64Data.replace(/^data:image\/\w+;base64,/, '');
-        }
-        
-        const arrayBuffer = Buffer.from(base64Data, 'base64');
+        const base64 = profile.idImage.replace(/^data:image\/\w+;base64,/, '');
+        const arrayBuffer = Buffer.from(base64, 'base64');
         const safeType = profile.idType.replace(/\s+/g, "_");
         const fileName = `${userId}/${safeType}.jpg`;
 
