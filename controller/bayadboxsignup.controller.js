@@ -205,7 +205,7 @@ const driverSignupController = {
       email,
       plateNumber,
       licenseNumber,
-      licenseImage,
+      licenseImageUrl, // Now receives URL instead of base64
       password,
       confirmPassword,
       jeepneyType
@@ -213,14 +213,14 @@ const driverSignupController = {
 
     try {
       // Same validations as partner project
-      if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+      if (!firstName?.trim() || !lastName?.trim() || !email?.trim()) {
         return res.status(400).json({ 
           success: false, 
           error: "All fields are required." 
         });
       }
 
-      if (!licenseNumber.trim()) {
+      if (!licenseNumber?.trim()) {
         return res.status(400).json({ 
           success: false, 
           error: "License Number is required." 
@@ -256,48 +256,61 @@ const driverSignupController = {
       }
 
       const plateRegex = /^([A-Z]{3}\s\d{3,4}|[A-Z]{3}\s\d{2}[A-Z]|[0-9]{3}\s[A-Z]{3})$/;
-      if (!plateRegex.test(plateNumber.toUpperCase())) {
+      if (!plateRegex.test(plateNumber?.toUpperCase())) {
         return res.status(400).json({ 
           success: false, 
           error: "Invalid Plate Number, accepted formats: ABC 123, ABC 1234, ABC 12D, or 123 ABC." 
         });
       }
 
-      if (!licenseImage) {
+      if (!licenseImageUrl) {
         return res.status(400).json({ 
           success: false, 
-          error: "Please upload an image of your LTO license." 
+          error: "License image is required." 
         });
       }
 
-      // AUTOMATIC CAPACITY CALCULATION (Traditional: 22, Multicab: 18)
+      // AUTOMATIC CAPACITY CALCULATION
       const capacity_max = jeepneyType === 'Traditional' ? 22 : 18;
-      const puv_type = 'jeepney'; // Automatically set to jeepney
+      const puv_type = 'jeepney';
 
-      // 1. Create auth user (same as partner)
+      // 1. Create auth user
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
+        email: email.trim().toLowerCase(),
+        password: password,
       });
-      if (signUpError) throw signUpError;
-      if (!signUpData.user) throw new Error("Signup failed. Try again.");
 
-      // 2. Immediately sign in (same as partner)
+      if (signUpError) {
+        if (signUpError.message.includes('already registered')) {
+          return res.status(400).json({
+            success: false,
+            error: "Email already registered. Please use a different email."
+          });
+        }
+        throw signUpError;
+      }
+
+      if (!signUpData.user) {
+        throw new Error("Signup failed. Try again.");
+      }
+
+      // 2. Immediately sign in
       const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+        email: email.trim().toLowerCase(),
+        password: password,
       });
+
       if (loginError) throw loginError;
 
-      // 3. Run postLoginSetup with driver profile (same as partner)
+      // 3. Run postLoginSetup with driver profile
       if (loginData.user) {
         const profile = {
-          firstName,
-          lastName,
-          email,
-          plateNumber: plateNumber,
-          licenseNumber: licenseNumber,
-          plateImage: licenseImage,
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          email: email.trim().toLowerCase(),
+          plateNumber: plateNumber.toUpperCase(),
+          licenseNumber: licenseNumber.trim(),
+          plateImage: licenseImageUrl, // URL instead of base64
           capacity_max: capacity_max,
           puv_type: puv_type,
         };
