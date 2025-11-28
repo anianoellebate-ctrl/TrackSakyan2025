@@ -602,7 +602,7 @@ class JeepneyDensityPredictor {
         
         Object.values(weeklyPatterns).forEach(pattern => {
             // Only use patterns with data from multiple dates
-            if (pattern.dates.length >= 1) { // Reduced to 1 for testing
+            if (pattern.dates.length >= 2) { // Reduced to 1 for testing
                 const avgJeepneys = pattern.dailyJeepneyCounts.reduce((a, b) => a + b, 0) / pattern.dailyJeepneyCounts.length;
                 const avgTrips = pattern.dailyTripCounts.reduce((a, b) => a + b, 0) / pattern.dailyTripCounts.length;
                 const avgPassengers = pattern.dailyPassengerAvgs.reduce((a, b) => a + b, 0) / pattern.dailyPassengerAvgs.length;
