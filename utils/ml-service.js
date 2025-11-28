@@ -661,7 +661,7 @@ class PassengerDemandPredictor {
         
         Object.values(weeklyPatterns).forEach(pattern => {
             // ONLY use patterns with data from multiple dates
-            if (pattern.dates.length >= 1) { // Reduced to 1 for initial testing
+            if (pattern.dates.length >= 2) { // Reduced to 1 for initial testing
                 const avgPassengers = pattern.dailyPassengers.reduce((a, b) => a + b, 0) / pattern.dailyPassengers.length;
                 const avgTrips = pattern.dailyTrips.reduce((a, b) => a + b, 0) / pattern.dailyTrips.length;
                 const avgFare = pattern.dailyFares.reduce((a, b) => a + b, 0) / pattern.dailyFares.length;
