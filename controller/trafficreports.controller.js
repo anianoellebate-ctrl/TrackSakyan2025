@@ -4014,10 +4014,13 @@ exports.getTrafficReports = async (req, res) => {
     
     const posts = postsWithLikes.map(row => {
       // Calculate credibility score if it's an accident report
-      let credibilityScore = row.credibility_score || 0;
-      if (row.is_accident_report && credibilityScore === 0) {
-        credibilityScore = calculateDynamicCredibilityScore(row);
-      }
+      let credibilityScore = 0;
+        if (row.is_accident_report) {
+          credibilityScore = row.credibility_score || 0;
+          if (credibilityScore === 0) {
+            credibilityScore = calculateDynamicCredibilityScore(row);
+          }
+        }
       
       return {
         traffic_report_id: row.traffic_report_id,
