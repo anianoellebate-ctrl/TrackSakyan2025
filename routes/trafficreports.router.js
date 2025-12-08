@@ -26,4 +26,20 @@ router.get('/comments/:comment_id/replies', trafficController.getReplies);
 router.get('/my-posts/:email', trafficController.getMyPosts);
 router.delete('/:traffic_report_id', trafficController.deleteMyPost);
 
+// ========== CREDIBILITY SYSTEM ROUTES ==========
+// Verify a report as legit or fake
+router.post('/credibility/verify', trafficController.verifyReport);
+
+// Get credibility scores for multiple posts
+router.post('/credibility/scores', trafficController.getCredibilityScores);
+
+// Get user verification status for posts
+router.get('/credibility/user-verifications', trafficController.getUserVerifications);
+
+// Get detailed credibility info for a specific post
+router.get('/:traffic_report_id/credibility-details', trafficController.getCredibilityDetails);
+
+// Get similar accident reports in the same area
+router.get('/:traffic_report_id/similar-accidents', trafficController.getSimilarAccidentReports);
+
 module.exports = router;
