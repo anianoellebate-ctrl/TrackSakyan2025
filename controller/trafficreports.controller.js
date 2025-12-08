@@ -3362,30 +3362,52 @@ exports.createTrafficReport = async (req, res) => {
     // Detect if this is an accident report
     const isAccidentReport = containsAccidentKeywords(text);
     
-    // Calculate initial credibility score for accident reports
+    // Start with 0% credibility for accident reports
     let credibilityScore = 0;
-    if (isAccidentReport) {
-      // Start with 0 for accident reports - they need verification
-      credibilityScore = 0;
-      
-      // Only add evidence bonuses if present
-      if (imageUrl) {
-        credibilityScore += 20; // Image evidence
-      }
-      
-      if (location) {
+    
+    // Check for similar posts from OTHER users on current date
+    if (isAccidentReport && location) {
+      try {
+        const now = new Date();
+        const phTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+        const currentDate = phTime.toISOString().split('T')[0];
+        
         const locationObj = typeof location === 'string' ? JSON.parse(location) : location;
+        
         if (locationObj && locationObj.latitude && locationObj.longitude) {
-          credibilityScore += 10; // Location evidence
+          // Check for similar accident reports from OTHER users on current date
+          const similarSql = `
+            SELECT COUNT(*) as similar_count
+            FROM traffic_reports 
+            WHERE is_accident_report = true
+            AND location IS NOT NULL
+            AND (commuter_id != $1 OR driver_id != $2)
+            AND (commuter_id IS NOT NULL OR driver_id IS NOT NULL)
+            AND DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $3
+            AND (
+              ABS((location->>'latitude')::FLOAT - $4::FLOAT) < 0.009
+              AND ABS((location->>'longitude')::FLOAT - $5::FLOAT) < 0.009
+            )
+          `;
+          
+          const similarResult = await db.query(similarSql, [
+            commuter_id,
+            driver_id,
+            currentDate,
+            locationObj.latitude,
+            locationObj.longitude
+          ]);
+          
+          const similarCount = parseInt(similarResult.rows[0].similar_count) || 0;
+          
+          if (similarCount > 0) {
+            // Add credibility for having similar reports from other users
+            credibilityScore += Math.min(similarCount * 15, 30); // Max 30% for similar reports
+          }
         }
+      } catch (error) {
+        console.error('Error checking similar reports:', error);
       }
-      
-      if (text && text.length > 50) {
-        credibilityScore += 10; // Detailed description
-      }
-      
-      // Cap at 40 (evidence-only, no verification yet)
-      credibilityScore = Math.min(credibilityScore, 40);
     }
 
     const insertSql = `
@@ -4058,57 +4080,40 @@ exports.getTrafficReports = async (req, res) => {
 const calculateDynamicCredibilityScore = (post) => {
   const totalVerifications = (post.legit_verifications || 0) + (post.fake_verifications || 0);
   
-  // If no verifications yet, return evidence-only score (max 40)
+  // If no verifications yet, start from 0
   if (totalVerifications === 0) {
-    let evidenceScore = 0;
-    
-    if (post.image) {
-      evidenceScore += 20;
-    }
-    
-    if (post.location) {
-      evidenceScore += 10;
-    }
-    
-    if (post.report_text && post.report_text.length > 50) {
-      evidenceScore += 10;
-    }
-    
-    return Math.min(evidenceScore, 40);
+    return 0;
   }
   
-  // Calculate verification-based score
-  let score = 0;
-  
-  // Verification weight: 60% of total
-  const verificationWeight = 60;
-  const evidenceWeight = 40;
+  // Calculate score based on verifications (max 70%)
+  const verificationWeight = 70;
+  const evidenceWeight = 30;
   
   // Calculate verification portion
   const legitPercentage = (post.legit_verifications / totalVerifications) * 100;
   const verificationScore = (legitPercentage / 100) * verificationWeight;
   
-  // Calculate evidence portion
+  // Calculate evidence portion (max 30%)
   let evidenceScore = 0;
   if (post.image) {
-    evidenceScore += 20; // 50% of evidence weight
+    evidenceScore += 15; // 50% of evidence weight
   }
   
   if (post.location) {
-    evidenceScore += 10; // 25% of evidence weight
+    evidenceScore += 10; // 33% of evidence weight
   }
   
   if (post.report_text && post.report_text.length > 50) {
-    evidenceScore += 10; // 25% of evidence weight
+    evidenceScore += 5; // 17% of evidence weight
   }
   
   // Scale evidence score to evidence weight
-  const evidencePortion = (evidenceScore / 40) * evidenceWeight;
+  const evidencePortion = (evidenceScore / 30) * evidenceWeight;
   
   // Combine scores
-  score = verificationScore + evidencePortion;
+  let score = verificationScore + evidencePortion;
   
-  // Apply minimum 3 verifications requirement
+  // Apply minimum 3 verifications requirement for higher scores
   if (totalVerifications < 3) {
     // Cap at 50% if less than 3 verifications
     score = Math.min(score, 50);
@@ -4441,7 +4446,8 @@ exports.verifyReport = async (req, res) => {
     
     // Check if report exists and is an accident report
     const reportCheckSql = `
-      SELECT traffic_report_id, is_accident_report, image, location, report_text
+      SELECT traffic_report_id, is_accident_report, image, location, report_text,
+             commuter_id, driver_id
       FROM traffic_reports 
       WHERE traffic_report_id = $1
     `;
@@ -4462,6 +4468,31 @@ exports.verifyReport = async (req, res) => {
         success: false, 
         message: 'Only accident reports can be verified.' 
       });
+    }
+    
+    // Check if user is trying to verify their own post
+    const userCheckSql = `
+      SELECT commuter_id, driverid 
+      FROM (
+        SELECT commuter_id, NULL as driverid FROM commuters WHERE email = $1
+        UNION ALL
+        SELECT NULL as commuter_id, driverid FROM drivers WHERE email = $1
+      ) AS user_info
+    `;
+    
+    const userResult = await db.query(userCheckSql, [email]);
+    
+    if (userResult.rows.length > 0) {
+      const user = userResult.rows[0];
+      
+      // Check if user is the post owner
+      if ((user.commuter_id && report.commuter_id && user.commuter_id === report.commuter_id) ||
+          (user.driverid && report.driver_id && user.driverid === report.driver_id)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'You cannot verify your own post.' 
+        });
+      }
     }
     
     // Check if already verified by this user
@@ -4517,38 +4548,37 @@ exports.verifyReport = async (req, res) => {
     
     let credibilityScore = 0;
     
-    // Start with evidence-only score (max 40)
+    // Start with evidence-only score (max 30%)
     let evidenceScore = 0;
     if (report.image) {
-      evidenceScore += 20;
+      evidenceScore += 15;
     }
     if (report.location) {
       evidenceScore += 10;
     }
     if (report.report_text && report.report_text.length > 50) {
-      evidenceScore += 10;
+      evidenceScore += 5;
     }
-    evidenceScore = Math.min(evidenceScore, 40);
     
-    // If no verifications yet, return evidence-only score
+    // If no verifications yet, return evidence-only score (max 30%)
     if (totalVerifications === 0) {
       credibilityScore = evidenceScore;
     } else {
-      // Calculate verification-based score
-      const verificationWeight = 60;
-      const evidenceWeight = 40;
+      // Calculate verification-based score (max 70%)
+      const verificationWeight = 70;
+      const evidenceWeight = 30;
       
       // Calculate verification portion
       const legitPercentage = (legitCount / totalVerifications) * 100;
       const verificationScore = (legitPercentage / 100) * verificationWeight;
       
       // Scale evidence score to evidence weight
-      const evidencePortion = (evidenceScore / 40) * evidenceWeight;
+      const evidencePortion = (evidenceScore / 30) * evidenceWeight;
       
       // Combine scores
       credibilityScore = verificationScore + evidencePortion;
       
-      // Apply minimum 3 verifications requirement
+      // Apply minimum 3 verifications requirement for higher scores
       if (totalVerifications < 3) {
         // Cap at 50% if less than 3 verifications
         credibilityScore = Math.min(credibilityScore, 50);
@@ -4778,7 +4808,7 @@ exports.getCredibilityDetails = async (req, res) => {
   }
 };
 
-// Get similar accident reports in the same area (ONLY FROM CURRENT DAY)
+// Get similar accident reports in the same area (ONLY FROM CURRENT DAY AND OTHER USERS)
 exports.getSimilarAccidentReports = async (req, res) => {
   try {
     const { traffic_report_id } = req.params;
@@ -4792,9 +4822,9 @@ exports.getSimilarAccidentReports = async (req, res) => {
     
     console.log('📅 Current PH Date for similar reports:', currentDate);
     
-    // First, get the location of the current report
+    // First, get the location and user info of the current report
     const locationSql = `
-      SELECT location, created_at 
+      SELECT location, commuter_id, driver_id
       FROM traffic_reports 
       WHERE traffic_report_id = $1 AND location IS NOT NULL
     `;
@@ -4812,7 +4842,7 @@ exports.getSimilarAccidentReports = async (req, res) => {
     const currentReport = locationResult.rows[0];
     const currentLocation = JSON.parse(currentReport.location);
     
-    // Get reports from CURRENT DAY ONLY within 1km radius
+    // Get reports from CURRENT DAY ONLY from OTHER users within 1km radius
     const similarSql = `
       SELECT 
         tr.traffic_report_id,
@@ -4821,16 +4851,29 @@ exports.getSimilarAccidentReports = async (req, res) => {
         tr.location,
         tr.created_at,
         tr.credibility_score,
-        tr.is_accident_report
+        tr.is_accident_report,
+        COALESCE(c."profile-image", d.imageurl) as "profile-image",
+        CASE 
+          WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
+          WHEN c.commuter_id IS NOT NULL THEN c.fname
+          ELSE tr.user_name
+        END as display_name
       FROM traffic_reports tr
+      LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
+      LEFT JOIN drivers d ON tr.driver_id = d.driverid
       WHERE tr.traffic_report_id != $1
       AND tr.is_accident_report = true
       AND tr.location IS NOT NULL
       AND DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $2
       AND (
+        -- Exclude posts from the same user
+        (tr.commuter_id IS NULL OR tr.commuter_id != $3)
+        AND (tr.driver_id IS NULL OR tr.driver_id != $4)
+      )
+      AND (
         -- Simple distance calculation (approximate for small distances)
-        ABS((location->>'latitude')::FLOAT - $3::FLOAT) < 0.009 -- ~1km
-        AND ABS((location->>'longitude')::FLOAT - $4::FLOAT) < 0.009 -- ~1km
+        ABS((location->>'latitude')::FLOAT - $5::FLOAT) < 0.009 -- ~1km
+        AND ABS((location->>'longitude')::FLOAT - $6::FLOAT) < 0.009 -- ~1km
       )
       ORDER BY tr.created_at DESC
       LIMIT 10
@@ -4839,6 +4882,8 @@ exports.getSimilarAccidentReports = async (req, res) => {
     const similarResult = await db.query(similarSql, [
       traffic_report_id,
       currentDate,
+      currentReport.commuter_id,
+      currentReport.driver_id,
       currentLocation.latitude,
       currentLocation.longitude
     ]);
@@ -4850,7 +4895,9 @@ exports.getSimilarAccidentReports = async (req, res) => {
       location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
       created_at: row.created_at,
       credibility_score: row.credibility_score || 0,
-      is_accident_report: row.is_accident_report || false
+      is_accident_report: row.is_accident_report || false,
+      'profile-image': row['profile-image'],
+      display_name: row.display_name
     }));
     
     res.json({
