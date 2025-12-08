@@ -3361,10 +3361,36 @@ exports.createTrafficReport = async (req, res) => {
 
     // Detect if this is an accident report
     const isAccidentReport = containsAccidentKeywords(text);
+    
+    // Calculate initial credibility score for accident reports
+    let credibilityScore = 0;
+    if (isAccidentReport) {
+      // Start with 0 for accident reports - they need verification
+      credibilityScore = 0;
+      
+      // Only add evidence bonuses if present
+      if (imageUrl) {
+        credibilityScore += 20; // Image evidence
+      }
+      
+      if (location) {
+        const locationObj = typeof location === 'string' ? JSON.parse(location) : location;
+        if (locationObj && locationObj.latitude && locationObj.longitude) {
+          credibilityScore += 10; // Location evidence
+        }
+      }
+      
+      if (text && text.length > 50) {
+        credibilityScore += 10; // Detailed description
+      }
+      
+      // Cap at 40 (evidence-only, no verification yet)
+      credibilityScore = Math.min(credibilityScore, 40);
+    }
 
     const insertSql = `
-      INSERT INTO traffic_reports (commuter_id, driver_id, report_text, image, location, user_name, is_accident_report)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO traffic_reports (commuter_id, driver_id, report_text, image, location, user_name, is_accident_report, credibility_score)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `.trim();
 
@@ -3375,7 +3401,8 @@ exports.createTrafficReport = async (req, res) => {
       imageUrl,
       location ? JSON.parse(location) : null,
       user_name_to_use,
-      isAccidentReport
+      isAccidentReport,
+      credibilityScore
     ];
 
     console.log('Inserting values:', insertValues);
@@ -3384,18 +3411,6 @@ exports.createTrafficReport = async (req, res) => {
     const newReport = insertResult.rows[0];
 
     console.log('✅ New report created in DB:', newReport);
-
-    // Calculate initial credibility score for accident reports
-    let credibilityScore = 0;
-    if (isAccidentReport) {
-      credibilityScore = calculateInitialCredibilityScore(newReport, imageUrl, location);
-      
-      // Update the credibility score in the database
-      await db.query(
-        'UPDATE traffic_reports SET credibility_score = $1 WHERE traffic_report_id = $2',
-        [credibilityScore, newReport.traffic_report_id]
-      );
-    }
 
     res.json({
       success: true,
@@ -3421,31 +3436,6 @@ exports.createTrafficReport = async (req, res) => {
       error: error.message
     });
   }
-};
-
-// Helper function to calculate initial credibility score
-const calculateInitialCredibilityScore = (report, imageUrl, location) => {
-  let score = 0;
-  
-  // Base score for posting
-  score += 20;
-  
-  // Bonus for having image evidence
-  if (imageUrl) {
-    score += 20;
-  }
-  
-  // Bonus for having location
-  if (location) {
-    score += 20;
-  }
-  
-  // Bonus for detailed text (more than 50 characters)
-  if (report.report_text && report.report_text.length > 50) {
-    score += 10;
-  }
-  
-  return Math.min(score, 100);
 };
 
 exports.getMyPosts = async (req, res) => {
@@ -4014,13 +4004,13 @@ exports.getTrafficReports = async (req, res) => {
     
     const posts = postsWithLikes.map(row => {
       // Calculate credibility score if it's an accident report
-      let credibilityScore = 0;
-        if (row.is_accident_report) {
-          credibilityScore = row.credibility_score || 0;
-          if (credibilityScore === 0) {
-            credibilityScore = calculateDynamicCredibilityScore(row);
-          }
+      let credibilityScore = row.credibility_score || 0;
+      if (row.is_accident_report) {
+        // Recalculate if we have verifications data
+        if (row.legit_verifications > 0 || row.fake_verifications > 0) {
+          credibilityScore = calculateDynamicCredibilityScore(row);
         }
+      }
       
       return {
         traffic_report_id: row.traffic_report_id,
@@ -4066,27 +4056,64 @@ exports.getTrafficReports = async (req, res) => {
 
 // Helper function to calculate dynamic credibility score
 const calculateDynamicCredibilityScore = (post) => {
-  let score = 0;
-  
-  // Base verification score (70% of total)
   const totalVerifications = (post.legit_verifications || 0) + (post.fake_verifications || 0);
-  if (totalVerifications > 0) {
-    const legitPercentage = (post.legit_verifications / totalVerifications) * 100;
-    score += legitPercentage * 0.7; // 70% weight for user verifications
-  } else {
-    score += 35; // Default 50% of 70 = 35
+  
+  // If no verifications yet, return evidence-only score (max 40)
+  if (totalVerifications === 0) {
+    let evidenceScore = 0;
+    
+    if (post.image) {
+      evidenceScore += 20;
+    }
+    
+    if (post.location) {
+      evidenceScore += 10;
+    }
+    
+    if (post.report_text && post.report_text.length > 50) {
+      evidenceScore += 10;
+    }
+    
+    return Math.min(evidenceScore, 40);
   }
   
-  // Evidence bonus (30% of total)
+  // Calculate verification-based score
+  let score = 0;
+  
+  // Verification weight: 60% of total
+  const verificationWeight = 60;
+  const evidenceWeight = 40;
+  
+  // Calculate verification portion
+  const legitPercentage = (post.legit_verifications / totalVerifications) * 100;
+  const verificationScore = (legitPercentage / 100) * verificationWeight;
+  
+  // Calculate evidence portion
+  let evidenceScore = 0;
   if (post.image) {
-    score += 15; // 50% of 30 = 15
+    evidenceScore += 20; // 50% of evidence weight
   }
   
   if (post.location) {
-    score += 15; // 50% of 30 = 15
+    evidenceScore += 10; // 25% of evidence weight
   }
   
-  // Cap at 100
+  if (post.report_text && post.report_text.length > 50) {
+    evidenceScore += 10; // 25% of evidence weight
+  }
+  
+  // Scale evidence score to evidence weight
+  const evidencePortion = (evidenceScore / 40) * evidenceWeight;
+  
+  // Combine scores
+  score = verificationScore + evidencePortion;
+  
+  // Apply minimum 3 verifications requirement
+  if (totalVerifications < 3) {
+    // Cap at 50% if less than 3 verifications
+    score = Math.min(score, 50);
+  }
+  
   return Math.min(Math.round(score), 100);
 };
 
@@ -4414,7 +4441,7 @@ exports.verifyReport = async (req, res) => {
     
     // Check if report exists and is an accident report
     const reportCheckSql = `
-      SELECT traffic_report_id, is_accident_report 
+      SELECT traffic_report_id, is_accident_report, image, location, report_text
       FROM traffic_reports 
       WHERE traffic_report_id = $1
     `;
@@ -4472,7 +4499,7 @@ exports.verifyReport = async (req, res) => {
       console.log(`✅ Added new verification for report ${post_id}`);
     }
     
-    // Calculate new credibility score
+    // Get verification counts
     const scoreSql = `
       SELECT 
         COUNT(CASE WHEN verification_type = 'legit' THEN 1 END) as legit_count,
@@ -4485,35 +4512,47 @@ exports.verifyReport = async (req, res) => {
     const legitCount = parseInt(scoreResult.rows[0].legit_count) || 0;
     const fakeCount = parseInt(scoreResult.rows[0].fake_count) || 0;
     
-    // Get report details for scoring
-    const reportDetailsSql = `
-      SELECT image, location 
-      FROM traffic_reports 
-      WHERE traffic_report_id = $1
-    `;
+    // Calculate new credibility score
+    const totalVerifications = legitCount + fakeCount;
     
-    const reportDetailsResult = await db.query(reportDetailsSql, [post_id]);
-    const reportDetails = reportDetailsResult.rows[0];
-    
-    // Calculate dynamic score
     let credibilityScore = 0;
     
-    // Base verification score (70% of total)
-    const totalVerifications = legitCount + fakeCount;
-    if (totalVerifications > 0) {
-      const legitPercentage = (legitCount / totalVerifications) * 100;
-      credibilityScore += legitPercentage * 0.7; // 70% weight for user verifications
+    // Start with evidence-only score (max 40)
+    let evidenceScore = 0;
+    if (report.image) {
+      evidenceScore += 20;
+    }
+    if (report.location) {
+      evidenceScore += 10;
+    }
+    if (report.report_text && report.report_text.length > 50) {
+      evidenceScore += 10;
+    }
+    evidenceScore = Math.min(evidenceScore, 40);
+    
+    // If no verifications yet, return evidence-only score
+    if (totalVerifications === 0) {
+      credibilityScore = evidenceScore;
     } else {
-      credibilityScore += 35; // Default 50% of 70 = 35
-    }
-    
-    // Evidence bonus (30% of total)
-    if (reportDetails.image) {
-      credibilityScore += 15; // 50% of 30 = 15
-    }
-    
-    if (reportDetails.location) {
-      credibilityScore += 15; // 50% of 30 = 15
+      // Calculate verification-based score
+      const verificationWeight = 60;
+      const evidenceWeight = 40;
+      
+      // Calculate verification portion
+      const legitPercentage = (legitCount / totalVerifications) * 100;
+      const verificationScore = (legitPercentage / 100) * verificationWeight;
+      
+      // Scale evidence score to evidence weight
+      const evidencePortion = (evidenceScore / 40) * evidenceWeight;
+      
+      // Combine scores
+      credibilityScore = verificationScore + evidencePortion;
+      
+      // Apply minimum 3 verifications requirement
+      if (totalVerifications < 3) {
+        // Cap at 50% if less than 3 verifications
+        credibilityScore = Math.min(credibilityScore, 50);
+      }
     }
     
     // Cap at 100
@@ -4530,6 +4569,7 @@ exports.verifyReport = async (req, res) => {
       new_score: credibilityScore,
       legit_count: legitCount,
       fake_count: fakeCount,
+      total_verifications: totalVerifications,
       message: `Report ${verification_type === 'legit' ? 'verified as legitimate' : 'marked as not legitimate'}`
     });
     
@@ -4560,6 +4600,9 @@ exports.getCredibilityScores = async (req, res) => {
         tr.traffic_report_id, 
         tr.credibility_score,
         tr.is_accident_report,
+        tr.image,
+        tr.location,
+        tr.report_text,
         COALESCE((
           SELECT COUNT(*) 
           FROM traffic_report_verifications v 
@@ -4584,7 +4627,8 @@ exports.getCredibilityScores = async (req, res) => {
         score: row.credibility_score || 0,
         is_accident_report: row.is_accident_report || false,
         legit_verifications: parseInt(row.legit_verifications) || 0,
-        fake_verifications: parseInt(row.fake_verifications) || 0
+        fake_verifications: parseInt(row.fake_verifications) || 0,
+        total_verifications: (parseInt(row.legit_verifications) || 0) + (parseInt(row.fake_verifications) || 0)
       };
     });
     
@@ -4734,12 +4778,19 @@ exports.getCredibilityDetails = async (req, res) => {
   }
 };
 
-// Get similar accident reports in the same area
+// Get similar accident reports in the same area (ONLY FROM CURRENT DAY)
 exports.getSimilarAccidentReports = async (req, res) => {
   try {
     const { traffic_report_id } = req.params;
     
     console.log('📍 Getting similar accident reports for:', traffic_report_id);
+    
+    // Get current date in PH time
+    const now = new Date();
+    const phTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+    const currentDate = phTime.toISOString().split('T')[0];
+    
+    console.log('📅 Current PH Date for similar reports:', currentDate);
     
     // First, get the location of the current report
     const locationSql = `
@@ -4760,39 +4811,34 @@ exports.getSimilarAccidentReports = async (req, res) => {
     
     const currentReport = locationResult.rows[0];
     const currentLocation = JSON.parse(currentReport.location);
-    const currentTime = new Date(currentReport.created_at);
     
-    // Get reports from the last 24 hours within 1km radius
-    const twentyFourHoursAgo = new Date(currentTime.getTime() - (24 * 60 * 60 * 1000));
-    
+    // Get reports from CURRENT DAY ONLY within 1km radius
     const similarSql = `
       SELECT 
-        traffic_report_id,
-        report_text,
-        image,
-        location,
-        created_at,
-        credibility_score,
-        is_accident_report
-      FROM traffic_reports 
-      WHERE traffic_report_id != $1
-      AND is_accident_report = true
-      AND location IS NOT NULL
-      AND created_at >= $2
-      AND created_at <= $3
+        tr.traffic_report_id,
+        tr.report_text,
+        tr.image,
+        tr.location,
+        tr.created_at,
+        tr.credibility_score,
+        tr.is_accident_report
+      FROM traffic_reports tr
+      WHERE tr.traffic_report_id != $1
+      AND tr.is_accident_report = true
+      AND tr.location IS NOT NULL
+      AND DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $2
       AND (
         -- Simple distance calculation (approximate for small distances)
-        ABS((location->>'latitude')::FLOAT - $4::FLOAT) < 0.009 -- ~1km
-        AND ABS((location->>'longitude')::FLOAT - $5::FLOAT) < 0.009 -- ~1km
+        ABS((location->>'latitude')::FLOAT - $3::FLOAT) < 0.009 -- ~1km
+        AND ABS((location->>'longitude')::FLOAT - $4::FLOAT) < 0.009 -- ~1km
       )
-      ORDER BY created_at DESC
+      ORDER BY tr.created_at DESC
       LIMIT 10
     `;
     
     const similarResult = await db.query(similarSql, [
       traffic_report_id,
-      twentyFourHoursAgo,
-      currentTime,
+      currentDate,
       currentLocation.latitude,
       currentLocation.longitude
     ]);
@@ -4810,7 +4856,8 @@ exports.getSimilarAccidentReports = async (req, res) => {
     res.json({
       success: true,
       similar_reports: similarReports,
-      count: similarReports.length
+      count: similarReports.length,
+      current_date: currentDate
     });
     
   } catch (error) {
