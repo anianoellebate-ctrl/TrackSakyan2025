@@ -4840,7 +4840,30 @@ exports.getSimilarAccidentReports = async (req, res) => {
     }
     
     const currentReport = locationResult.rows[0];
-    const currentLocation = JSON.parse(currentReport.location);
+    
+    // Parse location if it's a string
+    let currentLocation;
+    try {
+      currentLocation = typeof currentReport.location === 'string' 
+        ? JSON.parse(currentReport.location) 
+        : currentReport.location;
+    } catch (error) {
+      console.error('Error parsing location:', error);
+      return res.json({
+        success: true,
+        similar_reports: [],
+        message: 'Invalid location data format'
+      });
+    }
+    
+    // Check if location has valid coordinates
+    if (!currentLocation || !currentLocation.latitude || !currentLocation.longitude) {
+      return res.json({
+        success: true,
+        similar_reports: [],
+        message: 'Report has incomplete location data'
+      });
+    }
     
     // Get reports from CURRENT DAY ONLY from OTHER users within 1km radius
     const similarSql = `
@@ -4888,17 +4911,29 @@ exports.getSimilarAccidentReports = async (req, res) => {
       currentLocation.longitude
     ]);
     
-    const similarReports = similarResult.rows.map(row => ({
-      traffic_report_id: row.traffic_report_id,
-      report_text: row.report_text,
-      image: row.image,
-      location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
-      created_at: row.created_at,
-      credibility_score: row.credibility_score || 0,
-      is_accident_report: row.is_accident_report || false,
-      'profile-image': row['profile-image'],
-      display_name: row.display_name
-    }));
+    // Parse location for each similar report
+    const similarReports = similarResult.rows.map(row => {
+      let location = null;
+      try {
+        location = typeof row.location === 'string' 
+          ? JSON.parse(row.location) 
+          : row.location;
+      } catch (error) {
+        console.error('Error parsing similar report location:', error);
+      }
+      
+      return {
+        traffic_report_id: row.traffic_report_id,
+        report_text: row.report_text || '',
+        image: row.image,
+        location: location,
+        created_at: row.created_at,
+        credibility_score: row.credibility_score || 0,
+        is_accident_report: row.is_accident_report || false,
+        'profile-image': row['profile-image'],
+        display_name: row.display_name || 'User'
+      };
+    });
     
     res.json({
       success: true,
