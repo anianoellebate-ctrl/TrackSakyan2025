@@ -4424,6 +4424,7 @@ exports.getReplies = async (req, res) => {
 // ========== CREDIBILITY SYSTEM ENDPOINTS ==========
 
 // Verify a report as legit or fake
+// Verify a report as legit or fake
 exports.verifyReport = async (req, res) => {
   try {
     const { post_id, email, verification_type, user_name } = req.body;
@@ -4470,29 +4471,38 @@ exports.verifyReport = async (req, res) => {
       });
     }
     
-    // Check if user is trying to verify their own post
-    const userCheckSql = `
-      SELECT commuter_id, driverid 
-      FROM (
-        SELECT commuter_id, NULL as driverid FROM commuters WHERE email = $1
-        UNION ALL
-        SELECT NULL as commuter_id, driverid FROM drivers WHERE email = $1
-      ) AS user_info
-    `;
+    // Get user info
+    let userCommuterId = null;
+    let userDriverId = null;
     
-    const userResult = await db.query(userCheckSql, [email]);
+    // Check commuter first
+    const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+    const commuterResult = await db.query(commuterQuery, [email]);
     
-    if (userResult.rows.length > 0) {
-      const user = userResult.rows[0];
+    if (commuterResult.rows.length > 0) {
+      userCommuterId = commuterResult.rows[0].commuter_id;
+    } else {
+      // Check driver if not found in commuters
+      const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+      const driverResult = await db.query(driverQuery, [email]);
       
-      // Check if user is the post owner
-      if ((user.commuter_id && report.commuter_id && user.commuter_id === report.commuter_id) ||
-          (user.driverid && report.driver_id && user.driverid === report.driver_id)) {
-        return res.status(400).json({ 
+      if (driverResult.rows.length > 0) {
+        userDriverId = driverResult.rows[0].driverid;
+      } else {
+        return res.status(404).json({ 
           success: false, 
-          message: 'You cannot verify your own post.' 
+          message: 'User not found.' 
         });
       }
+    }
+    
+    // Check if user is trying to verify their own post
+    if ((userCommuterId && report.commuter_id && userCommuterId === report.commuter_id) ||
+        (userDriverId && report.driver_id && userDriverId === report.driver_id)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'You cannot verify your own post.' 
+      });
     }
     
     // Check if already verified by this user
