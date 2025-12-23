@@ -5451,6 +5451,376 @@ exports.deleteMyPost = async (req, res) => {
   }
 };
 
+exports.deleteComment = async (req, res) => {
+  try {
+    const { comment_id } = req.params;
+    const { email } = req.body;
+
+    console.log('🗑️ Deleting comment:', comment_id, 'by user:', email);
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required to delete a comment.' 
+      });
+    }
+
+    // Get user info
+    const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+    const commuterResult = await db.query(commuterQuery, [email]);
+
+    let commuter_id = null; 
+    let driver_id = null;
+
+    if (commuterResult.rows.length > 0) {
+      commuter_id = commuterResult.rows[0].commuter_id;
+    } else {
+      const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+      const driverResult = await db.query(driverQuery, [email]);
+      
+      if (driverResult.rows.length > 0) {
+        driver_id = driverResult.rows[0].driverid;
+      } else {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+      }
+    }
+
+    // Check ownership
+    const checkOwnershipSql = `
+      SELECT comment_id, traffic_report_id FROM traffic_report_comments 
+      WHERE comment_id = $1 AND (commuter_id = $2 OR driver_id = $3)
+    `;
+
+    const ownershipResult = await db.query(checkOwnershipSql, [
+      comment_id,
+      commuter_id,
+      driver_id
+    ]);
+
+    if (ownershipResult.rows.length === 0) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'You can only delete your own comments.' 
+      });
+    }
+
+    const traffic_report_id = ownershipResult.rows[0].traffic_report_id;
+
+    // Delete replies first
+    const deleteRepliesSql = 'DELETE FROM comment_replies WHERE comment_id = $1';
+    await db.query(deleteRepliesSql, [comment_id]);
+
+    // Delete comment likes
+    const deleteLikesSql = 'DELETE FROM comment_likes WHERE comment_id = $1';
+    await db.query(deleteLikesSql, [comment_id]);
+
+    // Delete comment
+    const deleteCommentSql = 'DELETE FROM traffic_report_comments WHERE comment_id = $1';
+    await db.query(deleteCommentSql, [comment_id]);
+
+    console.log('✅ Comment deleted successfully');
+
+    res.json({
+      success: true,
+      traffic_report_id: traffic_report_id,
+      message: 'Comment deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error deleting comment:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete comment',
+      error: error.message
+    });
+  }
+};
+
+// Edit comment
+exports.editComment = async (req, res) => {
+  try {
+    const { comment_id } = req.params;
+    const { comment_text, email } = req.body;
+
+    console.log('✏️ Editing comment:', comment_id);
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required to edit a comment.' 
+      });
+    }
+
+    if (!comment_text || comment_text.trim() === '') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Comment text is required.' 
+      });
+    }
+
+    // Get user info
+    const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+    const commuterResult = await db.query(commuterQuery, [email]);
+
+    let commuter_id = null; 
+    let driver_id = null;
+
+    if (commuterResult.rows.length > 0) {
+      commuter_id = commuterResult.rows[0].commuter_id;
+    } else {
+      const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+      const driverResult = await db.query(driverQuery, [email]);
+      
+      if (driverResult.rows.length > 0) {
+        driver_id = driverResult.rows[0].driverid;
+      } else {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+      }
+    }
+
+    // Check ownership
+    const checkOwnershipSql = `
+      SELECT comment_id FROM traffic_report_comments 
+      WHERE comment_id = $1 AND (commuter_id = $2 OR driver_id = $3)
+    `;
+
+    const ownershipResult = await db.query(checkOwnershipSql, [
+      comment_id,
+      commuter_id,
+      driver_id
+    ]);
+
+    if (ownershipResult.rows.length === 0) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'You can only edit your own comments.' 
+      });
+    }
+
+    // Update comment
+    const updateSql = `
+      UPDATE traffic_report_comments 
+      SET comment_text = $1, updated_at = CURRENT_TIMESTAMP
+      WHERE comment_id = $2
+      RETURNING *
+    `;
+
+    const updateResult = await db.query(updateSql, [comment_text.trim(), comment_id]);
+
+    // Get full comment with profile
+    const commentWithProfileSql = `
+      SELECT 
+        c.*,
+        COALESCE(cm."profile-image", d.imageurl) as "profile-image",
+        (SELECT COUNT(*) FROM comment_replies cr WHERE cr.comment_id = c.comment_id) as reply_count
+      FROM traffic_report_comments c
+      LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
+      LEFT JOIN drivers d ON c.driver_id = d.driverid
+      WHERE c.comment_id = $1
+    `;
+
+    const commentResult = await db.query(commentWithProfileSql, [comment_id]);
+    const updatedComment = commentResult.rows[0];
+
+    console.log('✅ Comment edited successfully');
+
+    res.json({
+      success: true,
+      comment: updatedComment,
+      message: 'Comment edited successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error editing comment:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to edit comment',
+      error: error.message
+    });
+  }
+};
+
+// Delete reply
+exports.deleteReply = async (req, res) => {
+  try {
+    const { reply_id } = req.params;
+    const { email } = req.body;
+
+    console.log('🗑️ Deleting reply:', reply_id, 'by user:', email);
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required to delete a reply.' 
+      });
+    }
+
+    // Get user info
+    const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+    const commuterResult = await db.query(commuterQuery, [email]);
+
+    let commuter_id = null; 
+    let driver_id = null;
+
+    if (commuterResult.rows.length > 0) {
+      commuter_id = commuterResult.rows[0].commuter_id;
+    } else {
+      const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+      const driverResult = await db.query(driverQuery, [email]);
+      
+      if (driverResult.rows.length > 0) {
+        driver_id = driverResult.rows[0].driverid;
+      } else {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+      }
+    }
+
+    // Check ownership
+    const checkOwnershipSql = `
+      SELECT reply_id, comment_id FROM comment_replies 
+      WHERE reply_id = $1 AND (commuter_id = $2 OR driver_id = $3)
+    `;
+
+    const ownershipResult = await db.query(checkOwnershipSql, [
+      reply_id,
+      commuter_id,
+      driver_id
+    ]);
+
+    if (ownershipResult.rows.length === 0) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'You can only delete your own replies.' 
+      });
+    }
+
+    const comment_id = ownershipResult.rows[0].comment_id;
+
+    // Delete reply
+    const deleteReplySql = 'DELETE FROM comment_replies WHERE reply_id = $1';
+    await db.query(deleteReplySql, [reply_id]);
+
+    console.log('✅ Reply deleted successfully');
+
+    res.json({
+      success: true,
+      comment_id: comment_id,
+      message: 'Reply deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error deleting reply:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete reply',
+      error: error.message
+    });
+  }
+};
+
+// Edit reply
+exports.editReply = async (req, res) => {
+  try {
+    const { reply_id } = req.params;
+    const { reply_text, email } = req.body;
+
+    console.log('✏️ Editing reply:', reply_id);
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required to edit a reply.' 
+      });
+    }
+
+    if (!reply_text || reply_text.trim() === '') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Reply text is required.' 
+      });
+    }
+
+    // Get user info
+    const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+    const commuterResult = await db.query(commuterQuery, [email]);
+
+    let commuter_id = null; 
+    let driver_id = null;
+
+    if (commuterResult.rows.length > 0) {
+      commuter_id = commuterResult.rows[0].commuter_id;
+    } else {
+      const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+      const driverResult = await db.query(driverQuery, [email]);
+      
+      if (driverResult.rows.length > 0) {
+        driver_id = driverResult.rows[0].driverid;
+      } else {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+      }
+    }
+
+    // Check ownership
+    const checkOwnershipSql = `
+      SELECT reply_id FROM comment_replies 
+      WHERE reply_id = $1 AND (commuter_id = $2 OR driver_id = $3)
+    `;
+
+    const ownershipResult = await db.query(checkOwnershipSql, [
+      reply_id,
+      commuter_id,
+      driver_id
+    ]);
+
+    if (ownershipResult.rows.length === 0) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'You can only edit your own replies.' 
+      });
+    }
+
+    // Update reply
+    const updateSql = `
+      UPDATE comment_replies 
+      SET reply_text = $1, updated_at = CURRENT_TIMESTAMP
+      WHERE reply_id = $2
+      RETURNING *
+    `;
+
+    const updateResult = await db.query(updateSql, [reply_text.trim(), reply_id]);
+
+    // Get full reply with profile
+    const replyWithProfileSql = `
+      SELECT 
+        cr.*,
+        COALESCE(cm."profile-image", d.imageurl) as "profile-image"
+      FROM comment_replies cr
+      LEFT JOIN commuters cm ON cr.commuter_id = cm.commuter_id
+      LEFT JOIN drivers d ON cr.driver_id = d.driverid
+      WHERE cr.reply_id = $1
+    `;
+
+    const replyResult = await db.query(replyWithProfileSql, [reply_id]);
+    const updatedReply = replyResult.rows[0];
+
+    console.log('✅ Reply edited successfully');
+
+    res.json({
+      success: true,
+      reply: updatedReply,
+      message: 'Reply edited successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Error editing reply:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to edit reply',
+      error: error.message
+    });
+  }
+};
+
 exports.getComments = async (req, res) => {
   try {
     const { traffic_report_id } = req.params;
