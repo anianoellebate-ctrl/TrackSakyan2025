@@ -86,6 +86,9 @@ router.get('/user-verifications', trafficController.getUserVerifications); // Re
 // Get similar accident reports in the same area
 router.get('/:traffic_report_id/similar-accidents', trafficController.getSimilarAccidentReports);
 
-// REMOVE THIS ENTIRELY: router.get('/:traffic_report_id/credibility-details', trafficController.getCredibilityDetails);
+router.delete('/comments/:comment_id', trafficController.deleteComment);
+router.put('/comments/:comment_id', trafficController.editComment);
+router.delete('/replies/:reply_id', trafficController.deleteReply);
+router.put('/replies/:reply_id', trafficController.editReply);
 
 module.exports = router;
