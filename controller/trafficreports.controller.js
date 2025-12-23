@@ -5798,43 +5798,83 @@ exports.getTrafficReports = async (req, res) => {
     
     console.log('📅 Current PH Date:', currentDate);
     
-    const sql = `
-    SELECT 
-      tr.*,
-      COALESCE(c."profile-image", d.imageurl) as "profile-image",
-      CASE 
-        WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
-        WHEN c.commuter_id IS NOT NULL THEN c.fname
-        ELSE tr.user_name
-      END as display_name,
-      d.fname as driver_fname,
-      d.lastname as driver_lastname,   
-      c.fname as commuter_fname,
-      d.driverid,
-      c.commuter_id,
-      COUNT(l.like_id) as like_count,
-      COUNT(DISTINCT tc.comment_id) as comment_count,
-      COALESCE((
-        SELECT COUNT(*) 
-        FROM traffic_report_verifications v 
-        WHERE v.traffic_report_id = tr.traffic_report_id 
-        AND v.verification_type = 'legit'
-      ), 0) as legit_verifications,
-      COALESCE((
-        SELECT COUNT(*) 
-        FROM traffic_report_verifications v 
-        WHERE v.traffic_report_id = tr.traffic_report_id 
-        AND v.verification_type = 'fake'
-      ), 0) as fake_verifications
-    FROM traffic_reports tr
-    LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
-    LEFT JOIN drivers d ON tr.driver_id = d.driverid
-    LEFT JOIN traffic_report_likes l ON tr.traffic_report_id = l.traffic_report_id
-    LEFT JOIN traffic_report_comments tc ON tr.traffic_report_id = tc.traffic_report_id
-    WHERE DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $1
-    GROUP BY tr.traffic_report_id, c."profile-image", d.imageurl, c.fname, d.fname, d.lastname, d.driverid, c.commuter_id
-    ORDER BY tr.created_at DESC
-  `;
+  //   const sql = `
+  //   SELECT 
+  //     tr.*,
+  //     COALESCE(c."profile-image", d.imageurl) as "profile-image",
+  //     CASE 
+  //       WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
+  //       WHEN c.commuter_id IS NOT NULL THEN c.fname
+  //       ELSE tr.user_name
+  //     END as display_name,
+  //     d.fname as driver_fname,
+  //     d.lastname as driver_lastname,   
+  //     c.fname as commuter_fname,
+  //     d.driverid,
+  //     c.commuter_id,
+  //     COUNT(l.like_id) as like_count,
+  //     COUNT(DISTINCT tc.comment_id) as comment_count,
+  //     COALESCE((
+  //       SELECT COUNT(*) 
+  //       FROM traffic_report_verifications v 
+  //       WHERE v.traffic_report_id = tr.traffic_report_id 
+  //       AND v.verification_type = 'legit'
+  //     ), 0) as legit_verifications,
+  //     COALESCE((
+  //       SELECT COUNT(*) 
+  //       FROM traffic_report_verifications v 
+  //       WHERE v.traffic_report_id = tr.traffic_report_id 
+  //       AND v.verification_type = 'fake'
+  //     ), 0) as fake_verifications
+  //   FROM traffic_reports tr
+  //   LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
+  //   LEFT JOIN drivers d ON tr.driver_id = d.driverid
+  //   LEFT JOIN traffic_report_likes l ON tr.traffic_report_id = l.traffic_report_id
+  //   LEFT JOIN traffic_report_comments tc ON tr.traffic_report_id = tc.traffic_report_id
+  //   WHERE DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $1
+  //   GROUP BY tr.traffic_report_id, c."profile-image", d.imageurl, c.fname, d.fname, d.lastname, d.driverid, c.commuter_id
+  //   ORDER BY tr.created_at DESC
+  // `;
+
+      const sql = `
+  SELECT 
+    tr.*,
+    COALESCE(c."profile-image", d.imageurl) as "profile-image",
+    CASE 
+      WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
+      WHEN c.commuter_id IS NOT NULL THEN c.fname
+      ELSE tr.user_name
+    END as display_name,
+    d.fname as driver_fname,
+    d.lastname as driver_lastname,   
+    c.fname as commuter_fname,
+    d.driverid,
+    c.commuter_id,
+    d.email as driver_email,  -- ADD THIS
+    c.email as commuter_email,  -- ADD THIS
+    COUNT(l.like_id) as like_count,
+    COUNT(DISTINCT tc.comment_id) as comment_count,
+    COALESCE((
+      SELECT COUNT(*) 
+      FROM traffic_report_verifications v 
+      WHERE v.traffic_report_id = tr.traffic_report_id 
+      AND v.verification_type = 'legit'
+    ), 0) as legit_verifications,
+    COALESCE((
+      SELECT COUNT(*) 
+      FROM traffic_report_verifications v 
+      WHERE v.traffic_report_id = tr.traffic_report_id 
+      AND v.verification_type = 'fake'
+    ), 0) as fake_verifications
+  FROM traffic_reports tr
+  LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
+  LEFT JOIN drivers d ON tr.driver_id = d.driverid
+  LEFT JOIN traffic_report_likes l ON tr.traffic_report_id = l.traffic_report_id
+  LEFT JOIN traffic_report_comments tc ON tr.traffic_report_id = tc.traffic_report_id
+  WHERE DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $1
+  GROUP BY tr.traffic_report_id, c."profile-image", d.imageurl, c.fname, d.fname, d.lastname, d.driverid, c.commuter_id, d.email, c.email
+  ORDER BY tr.created_at DESC
+`;
     
     const result = await db.query(sql, [currentDate]);
     console.log('✅ Query successful:', result.rows.length, 'rows found for current date:', currentDate);
@@ -5892,31 +5932,57 @@ exports.getTrafficReports = async (req, res) => {
     }
     
 
-    const posts = postsWithLikes.map(row => {
-      return {
-        traffic_report_id: row.traffic_report_id,
-        report_text: row.report_text,
-        image: row.image,
-        location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
-        created_at: row.created_at,
-        user_name: row.user_name,
-        'profile-image': row['profile-image'],
-        like_count: parseInt(row.like_count) || 0,
-        comment_count: parseInt(row.comment_count) || 0,
-        user_liked: row.user_liked || false,
-        display_name: row.display_name,
-        driver_fname: row.driver_fname,
-        driver_lastname: row.driver_lastname,
-        commuter_fname: row.commuter_fname,
-        driver_id: row.driverid,
-        commuter_id: row.commuter_id,
-        email: row.email,
-        is_accident_report: row.is_accident_report || false,
-        legit_verifications: parseInt(row.legit_verifications) || 0,
-        fake_verifications: parseInt(row.fake_verifications) || 0,
-        user_verification: row.user_verification || null
-      };
-    });
+    // const posts = postsWithLikes.map(row => {
+    //   return {
+    //     traffic_report_id: row.traffic_report_id,
+    //     report_text: row.report_text,
+    //     image: row.image,
+    //     location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
+    //     created_at: row.created_at,
+    //     user_name: row.user_name,
+    //     'profile-image': row['profile-image'],
+    //     like_count: parseInt(row.like_count) || 0,
+    //     comment_count: parseInt(row.comment_count) || 0,
+    //     user_liked: row.user_liked || false,
+    //     display_name: row.display_name,
+    //     driver_fname: row.driver_fname,
+    //     driver_lastname: row.driver_lastname,
+    //     commuter_fname: row.commuter_fname,
+    //     driver_id: row.driverid,
+    //     commuter_id: row.commuter_id,
+    //     email: row.email,
+    //     is_accident_report: row.is_accident_report || false,
+    //     legit_verifications: parseInt(row.legit_verifications) || 0,
+    //     fake_verifications: parseInt(row.fake_verifications) || 0,
+    //     user_verification: row.user_verification || null
+    //   };
+    // });
+
+      const posts = postsWithLikes.map(row => {
+          return {
+            traffic_report_id: row.traffic_report_id,
+            report_text: row.report_text,
+            image: row.image,
+            location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
+            created_at: row.created_at,
+            user_name: row.user_name,
+            'profile-image': row['profile-image'],
+            like_count: parseInt(row.like_count) || 0,
+            comment_count: parseInt(row.comment_count) || 0,
+            user_liked: row.user_liked || false,
+            display_name: row.display_name,
+            driver_fname: row.driver_fname,
+            driver_lastname: row.driver_lastname,
+            commuter_fname: row.commuter_fname,
+            driver_id: row.driverid,
+            commuter_id: row.commuter_id,
+            email: row.driver_email || row.commuter_email || null,  // ADD THIS - use the joined email
+            is_accident_report: row.is_accident_report || false,
+            legit_verifications: parseInt(row.legit_verifications) || 0,
+            fake_verifications: parseInt(row.fake_verifications) || 0,
+            user_verification: row.user_verification || null
+          };
+        });
 
 
     res.json({
