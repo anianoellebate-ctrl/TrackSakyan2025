@@ -5026,6 +5026,103 @@ exports.testEndpoint = async (req, res) => {
   }
 };
 
+// exports.createTrafficReport = async (req, res) => {
+//   try {
+//     console.log('📝 Creating traffic report with file upload...');
+
+//     const { text, location, email, user_name } = req.body;
+//     const file = req.file;
+
+//     if (!email) {
+//       return res.status(400).json({ success: false, message: 'Email is required to create a report.' });
+//     }
+
+//     const commuterQuery = 'SELECT commuter_id, fname, "profile-image" FROM commuters WHERE email = $1';
+//     const commuterResult = await db.query(commuterQuery, [email]);
+
+//     let commuter_id = null; 
+//     let driver_id = null;
+//     let user_name_to_use = user_name || email.split('@')[0];
+//     let profile_image = null;
+
+//     if (commuterResult.rows.length > 0) {
+//       commuter_id = commuterResult.rows[0].commuter_id;
+//       user_name_to_use = commuterResult.rows[0].fname || user_name_to_use;
+//       profile_image = commuterResult.rows[0]['profile-image'];
+//     } else {
+//       const driverQuery = 'SELECT driverid, fname, imageurl FROM drivers WHERE email = $1';
+//       const driverResult = await db.query(driverQuery, [email]);
+      
+//       if (driverResult.rows.length > 0) {
+//         driver_id = driverResult.rows[0].driverid;
+//         user_name_to_use = driverResult.rows[0].fname || user_name_to_use;
+//         profile_image = driverResult.rows[0].imageurl;
+//       } else {
+//         return res.status(404).json({ success: false, message: 'User not found.' });
+//       }
+//     }
+
+//     let imageUrl = null;
+
+//     if (file) {
+//       console.log('🖼️ Image file detected, uploading to Cloudinary...');
+//       const result = await uploadToCloudinary(file.buffer);
+//       imageUrl = result.secure_url;
+//       console.log('✅ Image uploaded successfully:', imageUrl);
+//     }
+
+//     // Detect if this is an accident report
+//     const isAccidentReport = containsAccidentKeywords(text);
+  
+   
+//     const insertSql = `
+//     INSERT INTO traffic_reports (commuter_id, driver_id, report_text, image, location, user_name, is_accident_report)
+//     VALUES ($1, $2, $3, $4, $5, $6, $7)
+//     RETURNING *
+//   `.trim();
+
+//   const insertValues = [
+//     commuter_id,
+//     driver_id,
+//     text || '',
+//     imageUrl,
+//     location ? JSON.parse(location) : null,
+//     user_name_to_use,
+//     isAccidentReport
+//   ];
+
+//     console.log('Inserting values:', insertValues);
+
+//     const insertResult = await db.query(insertSql, insertValues);
+//     const newReport = insertResult.rows[0];
+
+//     console.log('✅ New report created in DB:', newReport);
+
+//     res.json({
+//       success: true,
+//       post: {
+//         traffic_report_id: newReport.traffic_report_id,
+//         report_text: newReport.report_text,
+//         image: newReport.image,
+//         location: typeof newReport.location === 'string' ? JSON.parse(newReport.location) : newReport.location,
+//         created_at: newReport.created_at,
+//         user_name: user_name_to_use,
+//         'profile-image': profile_image,
+//         is_accident_report: isAccidentReport
+//       },
+//       message: 'Traffic report created successfully'
+//     });
+
+//   } catch (error) {
+//     console.error('❌ Error creating traffic report:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Internal server error',
+//       error: error.message
+//     });
+//   }
+// };
+
 exports.createTrafficReport = async (req, res) => {
   try {
     console.log('📝 Creating traffic report with file upload...');
@@ -5050,12 +5147,16 @@ exports.createTrafficReport = async (req, res) => {
       user_name_to_use = commuterResult.rows[0].fname || user_name_to_use;
       profile_image = commuterResult.rows[0]['profile-image'];
     } else {
-      const driverQuery = 'SELECT driverid, fname, imageurl FROM drivers WHERE email = $1';
+      // **FIX: Get full name for drivers**
+      const driverQuery = 'SELECT driverid, fname, lastname, imageurl FROM drivers WHERE email = $1';
       const driverResult = await db.query(driverQuery, [email]);
       
       if (driverResult.rows.length > 0) {
         driver_id = driverResult.rows[0].driverid;
-        user_name_to_use = driverResult.rows[0].fname || user_name_to_use;
+        // **FIX: Combine fname and lastname for drivers**
+        const firstName = driverResult.rows[0].fname || '';
+        const lastName = driverResult.rows[0].lastname || '';
+        user_name_to_use = `${firstName} ${lastName}`.trim() || user_name_to_use;
         profile_image = driverResult.rows[0].imageurl;
       } else {
         return res.status(404).json({ success: false, message: 'User not found.' });
@@ -5071,25 +5172,23 @@ exports.createTrafficReport = async (req, res) => {
       console.log('✅ Image uploaded successfully:', imageUrl);
     }
 
-    // Detect if this is an accident report
     const isAccidentReport = containsAccidentKeywords(text);
   
-   
     const insertSql = `
-    INSERT INTO traffic_reports (commuter_id, driver_id, report_text, image, location, user_name, is_accident_report)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    RETURNING *
-  `.trim();
+      INSERT INTO traffic_reports (commuter_id, driver_id, report_text, image, location, user_name, is_accident_report)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `.trim();
 
-  const insertValues = [
-    commuter_id,
-    driver_id,
-    text || '',
-    imageUrl,
-    location ? JSON.parse(location) : null,
-    user_name_to_use,
-    isAccidentReport
-  ];
+    const insertValues = [
+      commuter_id,
+      driver_id,
+      text || '',
+      imageUrl,
+      location ? JSON.parse(location) : null,
+      user_name_to_use, // **FIX: Now includes full name for drivers**
+      isAccidentReport
+    ];
 
     console.log('Inserting values:', insertValues);
 
@@ -5108,7 +5207,11 @@ exports.createTrafficReport = async (req, res) => {
         created_at: newReport.created_at,
         user_name: user_name_to_use,
         'profile-image': profile_image,
-        is_accident_report: isAccidentReport
+        is_accident_report: isAccidentReport,
+        // **FIX: Include driver and commuter IDs in response**
+        driver_id: driver_id,
+        commuter_id: commuter_id,
+        email: email
       },
       message: 'Traffic report created successfully'
     });
@@ -5346,6 +5449,89 @@ exports.getComments = async (req, res) => {
   }
 };
 
+// exports.addComment = async (req, res) => {
+//   try {
+//     const { traffic_report_id } = req.params;
+//     const { comment_text, email, user_name } = req.body;
+    
+//     console.log('💬 Adding comment to report:', traffic_report_id);
+
+//     if (!email) {
+//       return res.status(400).json({ success: false, message: 'Email is required to add a comment.' });
+//     }
+
+//     if (!comment_text || comment_text.trim() === '') {
+//       return res.status(400).json({ success: false, message: 'Comment text is required.' });
+//     }
+
+//     const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+//     const commuterResult = await db.query(commuterQuery, [email]);
+
+//     let commuter_id = null; 
+//     let driver_id = null;
+//     let user_name_to_use = user_name || email.split('@')[0];
+
+//     if (commuterResult.rows.length > 0) {
+//       commuter_id = commuterResult.rows[0].commuter_id;
+//     } else {
+//       const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+//       const driverResult = await db.query(driverQuery, [email]);
+      
+//       if (driverResult.rows.length > 0) {
+//         driver_id = driverResult.rows[0].driverid;
+//       } else {
+//         return res.status(404).json({ success: false, message: 'User not found.' });
+//       }
+//     }
+
+//     const insertSql = `
+//       INSERT INTO traffic_report_comments (traffic_report_id, commuter_id, driver_id, comment_text, user_name)
+//       VALUES ($1, $2, $3, $4, $5)
+//       RETURNING *
+//     `;
+
+//     const insertValues = [
+//       traffic_report_id,
+//       commuter_id,
+//       driver_id,
+//       comment_text.trim(),
+//       user_name_to_use
+//     ];
+
+//     const insertResult = await db.query(insertSql, insertValues);
+//     const newComment = insertResult.rows[0];
+
+//     const commentWithProfileSql = `
+//       SELECT 
+//         c.*,
+//         COALESCE(cm."profile-image", d.imageurl) as "profile-image"
+//       FROM traffic_report_comments c
+//       LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
+//       LEFT JOIN drivers d ON c.driver_id = d.driverid
+//       WHERE c.comment_id = $1
+//     `;
+
+//     const commentResult = await db.query(commentWithProfileSql, [newComment.comment_id]);
+//     const fullComment = commentResult.rows[0];
+
+//     console.log('✅ Comment added successfully');
+
+//     res.json({
+//       success: true,
+//       comment: fullComment,
+//       message: 'Comment added successfully'
+//     });
+
+//   } catch (error) {
+//     console.error('❌ Error adding comment:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to add comment',
+//       error: error.message
+//     });
+//   }
+// };
+
 exports.addComment = async (req, res) => {
   try {
     const { traffic_report_id } = req.params;
@@ -5361,7 +5547,7 @@ exports.addComment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Comment text is required.' });
     }
 
-    const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+    const commuterQuery = 'SELECT commuter_id, fname FROM commuters WHERE email = $1';
     const commuterResult = await db.query(commuterQuery, [email]);
 
     let commuter_id = null; 
@@ -5370,12 +5556,18 @@ exports.addComment = async (req, res) => {
 
     if (commuterResult.rows.length > 0) {
       commuter_id = commuterResult.rows[0].commuter_id;
+      user_name_to_use = commuterResult.rows[0].fname || user_name_to_use;
     } else {
-      const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+      // **FIX: Get full name for drivers**
+      const driverQuery = 'SELECT driverid, fname, lastname FROM drivers WHERE email = $1';
       const driverResult = await db.query(driverQuery, [email]);
       
       if (driverResult.rows.length > 0) {
         driver_id = driverResult.rows[0].driverid;
+        // **FIX: Combine fname and lastname for drivers**
+        const firstName = driverResult.rows[0].fname || '';
+        const lastName = driverResult.rows[0].lastname || '';
+        user_name_to_use = `${firstName} ${lastName}`.trim() || user_name_to_use;
       } else {
         return res.status(404).json({ success: false, message: 'User not found.' });
       }
@@ -5392,7 +5584,7 @@ exports.addComment = async (req, res) => {
       commuter_id,
       driver_id,
       comment_text.trim(),
-      user_name_to_use
+      user_name_to_use // **FIX: Now includes full name for drivers**
     ];
 
     const insertResult = await db.query(insertSql, insertValues);
@@ -5401,7 +5593,8 @@ exports.addComment = async (req, res) => {
     const commentWithProfileSql = `
       SELECT 
         c.*,
-        COALESCE(cm."profile-image", d.imageurl) as "profile-image"
+        COALESCE(cm."profile-image", d.imageurl) as "profile-image",
+        (SELECT COUNT(*) FROM comment_replies cr WHERE cr.comment_id = c.comment_id) as reply_count
       FROM traffic_report_comments c
       LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
       LEFT JOIN drivers d ON c.driver_id = d.driverid
