@@ -5370,6 +5370,87 @@ exports.getMyPosts = async (req, res) => {
   }
 };
 
+// exports.deleteMyPost = async (req, res) => {
+//   try {
+//     const { traffic_report_id } = req.params;
+//     const { email } = req.body;
+
+//     console.log('🗑️ Deleting post:', traffic_report_id, 'for user:', email);
+
+//     if (!email) {
+//       return res.status(400).json({ 
+//         success: false, 
+//         message: 'Email is required to delete a post.' 
+//       });
+//     }
+
+//     const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
+//     const commuterResult = await db.query(commuterQuery, [email]);
+
+//     let commuter_id = null; 
+//     let driver_id = null;
+
+//     if (commuterResult.rows.length > 0) {
+//       commuter_id = commuterResult.rows[0].commuter_id;
+//     } else {
+//       const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
+//       const driverResult = await db.query(driverQuery, [email]);
+      
+//       if (driverResult.rows.length > 0) {
+//         driver_id = driverResult.rows[0].driverid;
+//       } else {
+//         return res.status(404).json({ success: false, message: 'User not found.' });
+//       }
+//     }
+
+//     const checkOwnershipSql = `
+//       SELECT traffic_report_id FROM traffic_reports 
+//       WHERE traffic_report_id = $1 AND (commuter_id = $2 OR driver_id = $3)
+//     `;
+
+//     const ownershipResult = await db.query(checkOwnershipSql, [
+//       traffic_report_id,
+//       commuter_id,
+//       driver_id
+//     ]);
+
+//     if (ownershipResult.rows.length === 0) {
+//       return res.status(403).json({ 
+//         success: false, 
+//         message: 'You can only delete your own posts.' 
+//       });
+//     }
+
+//     // Delete verifications first
+//     const deleteVerificationsSql = 'DELETE FROM traffic_report_verifications WHERE traffic_report_id = $1';
+//     await db.query(deleteVerificationsSql, [traffic_report_id]);
+
+//     const deleteLikesSql = 'DELETE FROM traffic_report_likes WHERE traffic_report_id = $1';
+//     await db.query(deleteLikesSql, [traffic_report_id]);
+
+//     const deleteCommentsSql = 'DELETE FROM traffic_report_comments WHERE traffic_report_id = $1';
+//     await db.query(deleteCommentsSql, [traffic_report_id]);
+
+//     const deletePostSql = 'DELETE FROM traffic_reports WHERE traffic_report_id = $1';
+//     await db.query(deletePostSql, [traffic_report_id]);
+
+//     console.log('✅ Post deleted successfully');
+
+//     res.json({
+//       success: true,
+//       message: 'Post deleted successfully'
+//     });
+
+//   } catch (error) {
+//     console.error('❌ Error deleting post:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to delete post',
+//       error: error.message
+//     });
+//   }
+// };
+
 exports.deleteMyPost = async (req, res) => {
   try {
     const { traffic_report_id } = req.params;
@@ -5384,6 +5465,7 @@ exports.deleteMyPost = async (req, res) => {
       });
     }
 
+    // Get user info
     const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
     const commuterResult = await db.query(commuterQuery, [email]);
 
@@ -5403,34 +5485,70 @@ exports.deleteMyPost = async (req, res) => {
       }
     }
 
+    // Check ownership - must match by ID comparison
     const checkOwnershipSql = `
-      SELECT traffic_report_id FROM traffic_reports 
-      WHERE traffic_report_id = $1 AND (commuter_id = $2 OR driver_id = $3)
+      SELECT traffic_report_id, commuter_id, driver_id 
+      FROM traffic_reports 
+      WHERE traffic_report_id = $1
     `;
 
-    const ownershipResult = await db.query(checkOwnershipSql, [
-      traffic_report_id,
-      commuter_id,
-      driver_id
-    ]);
+    const ownershipResult = await db.query(checkOwnershipSql, [traffic_report_id]);
 
     if (ownershipResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Post not found.' 
+      });
+    }
+
+    const post = ownershipResult.rows[0];
+    
+    // Check if user owns this post
+    const isOwner = (
+      (commuter_id && post.commuter_id && Number(commuter_id) === Number(post.commuter_id)) ||
+      (driver_id && post.driver_id && Number(driver_id) === Number(post.driver_id))
+    );
+
+    if (!isOwner) {
       return res.status(403).json({ 
         success: false, 
         message: 'You can only delete your own posts.' 
       });
     }
 
-    // Delete verifications first
+    // Delete in order: verifications, replies, comment_likes, comments, post_likes, post
+    
+    // 1. Delete all replies to comments on this post
+    const deleteRepliesSql = `
+      DELETE FROM comment_replies 
+      WHERE comment_id IN (
+        SELECT comment_id FROM traffic_report_comments WHERE traffic_report_id = $1
+      )
+    `;
+    await db.query(deleteRepliesSql, [traffic_report_id]);
+
+    // 2. Delete comment likes
+    const deleteCommentLikesSql = `
+      DELETE FROM comment_likes 
+      WHERE comment_id IN (
+        SELECT comment_id FROM traffic_report_comments WHERE traffic_report_id = $1
+      )
+    `;
+    await db.query(deleteCommentLikesSql, [traffic_report_id]);
+
+    // 3. Delete verifications
     const deleteVerificationsSql = 'DELETE FROM traffic_report_verifications WHERE traffic_report_id = $1';
     await db.query(deleteVerificationsSql, [traffic_report_id]);
 
+    // 4. Delete post likes
     const deleteLikesSql = 'DELETE FROM traffic_report_likes WHERE traffic_report_id = $1';
     await db.query(deleteLikesSql, [traffic_report_id]);
 
+    // 5. Delete comments
     const deleteCommentsSql = 'DELETE FROM traffic_report_comments WHERE traffic_report_id = $1';
     await db.query(deleteCommentsSql, [traffic_report_id]);
 
+    // 6. Finally delete the post
     const deletePostSql = 'DELETE FROM traffic_reports WHERE traffic_report_id = $1';
     await db.query(deletePostSql, [traffic_report_id]);
 
