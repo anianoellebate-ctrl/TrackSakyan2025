@@ -5838,11 +5838,25 @@ exports.getComments = async (req, res) => {
     //   ORDER BY c.created_at ASC
     // `;
 
-       const sql = `
+    //    const sql = `
+    //   SELECT 
+    //     c.*,
+    //     COALESCE(cm."profile-image", d.imageurl) as "profile-image",
+    //     (SELECT COUNT(*) FROM comment_replies cr WHERE cr.comment_id = c.comment_id) as reply_count
+    //   FROM traffic_report_comments c
+    //   LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
+    //   LEFT JOIN drivers d ON c.driver_id = d.driverid
+    //   WHERE c.traffic_report_id = $1
+    //   ORDER BY c.created_at ASC
+    // `;
+
+    const sql = `
       SELECT 
         c.*,
         COALESCE(cm."profile-image", d.imageurl) as "profile-image",
-        (SELECT COUNT(*) FROM comment_replies cr WHERE cr.comment_id = c.comment_id) as reply_count
+        (SELECT COUNT(*) FROM comment_replies cr WHERE cr.comment_id = c.comment_id) as reply_count,
+        cm.email as commuter_email,
+        d.email as driver_email
       FROM traffic_report_comments c
       LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
       LEFT JOIN drivers d ON c.driver_id = d.driverid
@@ -6679,28 +6693,52 @@ exports.getReplies = async (req, res) => {
     
     console.log('💬 Fetching ALL replies for comment:', comment_id);
     
-    const sql = `
-      SELECT 
-        cr.*,
-        COALESCE(cm."profile-image", d.imageurl) as "profile-image",
-        CASE 
-          WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
-          WHEN cr.commuter_id IS NOT NULL THEN cm.fname
-          ELSE cr.user_name
-        END as display_name,
-        d.fname as driver_fname,
-        d.lastname as driver_lastname,   
-        cm.fname as commuter_fname,
-        d.driverid,
-        cr.commuter_id,
-        cm.email as commuter_email,
-        d.email as driver_email
-      FROM comment_replies cr
-      LEFT JOIN commuters cm ON cr.commuter_id = cm.commuter_id
-      LEFT JOIN drivers d ON cr.driver_id = d.driverid
-      WHERE cr.comment_id = $1
-      ORDER BY cr.created_at ASC
-    `;
+    // const sql = `
+    //   SELECT 
+    //     cr.*,
+    //     COALESCE(cm."profile-image", d.imageurl) as "profile-image",
+    //     CASE 
+    //       WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
+    //       WHEN cr.commuter_id IS NOT NULL THEN cm.fname
+    //       ELSE cr.user_name
+    //     END as display_name,
+    //     d.fname as driver_fname,
+    //     d.lastname as driver_lastname,   
+    //     cm.fname as commuter_fname,
+    //     d.driverid,
+    //     cr.commuter_id,
+    //     cm.email as commuter_email,
+    //     d.email as driver_email
+    //   FROM comment_replies cr
+    //   LEFT JOIN commuters cm ON cr.commuter_id = cm.commuter_id
+    //   LEFT JOIN drivers d ON cr.driver_id = d.driverid
+    //   WHERE cr.comment_id = $1
+    //   ORDER BY cr.created_at ASC
+    // `;
+
+      const sql = `
+          SELECT 
+            cr.*,
+            COALESCE(cm."profile-image", d.imageurl) as "profile-image",
+            CASE 
+              WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
+              WHEN cr.commuter_id IS NOT NULL THEN cm.fname
+              ELSE cr.user_name
+            END as display_name,
+            d.fname as driver_fname,
+            d.lastname as driver_lastname,   
+            cm.fname as commuter_fname,
+            d.driverid as driver_id,
+            cr.commuter_id,
+            cm.email as commuter_email,
+            d.email as driver_email
+          FROM comment_replies cr
+          LEFT JOIN commuters cm ON cr.commuter_id = cm.commuter_id
+          LEFT JOIN drivers d ON cr.driver_id = d.driverid
+          WHERE cr.comment_id = $1
+          ORDER BY cr.created_at ASC
+        `;
+      
     
     const result = await db.query(sql, [comment_id]);
     
