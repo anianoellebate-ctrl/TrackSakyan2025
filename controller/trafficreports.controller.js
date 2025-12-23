@@ -5306,10 +5306,22 @@ exports.getComments = async (req, res) => {
     
     console.log('💬 Fetching comments for report:', traffic_report_id);
     
-    const sql = `
+    // const sql = `
+    //   SELECT 
+    //     c.*,
+    //     COALESCE(cm."profile-image", d.imageurl) as "profile-image"
+    //   FROM traffic_report_comments c
+    //   LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
+    //   LEFT JOIN drivers d ON c.driver_id = d.driverid
+    //   WHERE c.traffic_report_id = $1
+    //   ORDER BY c.created_at ASC
+    // `;
+
+       const sql = `
       SELECT 
         c.*,
-        COALESCE(cm."profile-image", d.imageurl) as "profile-image"
+        COALESCE(cm."profile-image", d.imageurl) as "profile-image",
+        (SELECT COUNT(*) FROM comment_replies cr WHERE cr.comment_id = c.comment_id) as reply_count
       FROM traffic_report_comments c
       LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
       LEFT JOIN drivers d ON c.driver_id = d.driverid
