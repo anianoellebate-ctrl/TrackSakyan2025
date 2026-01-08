@@ -5026,102 +5026,315 @@ exports.testEndpoint = async (req, res) => {
   }
 };
 
-// exports.createTrafficReport = async (req, res) => {
-//   try {
-//     console.log('📝 Creating traffic report with file upload...');
-
-//     const { text, location, email, user_name } = req.body;
-//     const file = req.file;
-
-//     if (!email) {
-//       return res.status(400).json({ success: false, message: 'Email is required to create a report.' });
-//     }
-
-//     const commuterQuery = 'SELECT commuter_id, fname, "profile-image" FROM commuters WHERE email = $1';
-//     const commuterResult = await db.query(commuterQuery, [email]);
-
-//     let commuter_id = null; 
-//     let driver_id = null;
-//     let user_name_to_use = user_name || email.split('@')[0];
-//     let profile_image = null;
-
-//     if (commuterResult.rows.length > 0) {
-//       commuter_id = commuterResult.rows[0].commuter_id;
-//       user_name_to_use = commuterResult.rows[0].fname || user_name_to_use;
-//       profile_image = commuterResult.rows[0]['profile-image'];
-//     } else {
-//       const driverQuery = 'SELECT driverid, fname, imageurl FROM drivers WHERE email = $1';
-//       const driverResult = await db.query(driverQuery, [email]);
+// Check for existing posts at same location on same day
+exports.checkSimilarPosts = async (req, res) => {
+  try {
+    const { location, email, text } = req.body;
+    
+    console.log('🔍 Checking for similar posts...');
+    
+    if (!location) {
+      return res.json({
+        success: true,
+        similar_posts: [],
+        message: 'No location provided for comparison'
+      });
+    }
+    
+    let locationObj;
+    try {
+      locationObj = typeof location === 'string' ? JSON.parse(location) : location;
+    } catch (error) {
+      console.error('Error parsing location:', error);
+      return res.json({
+        success: true,
+        similar_posts: [],
+        message: 'Invalid location format'
+      });
+    }
+    
+    if (!locationObj || !locationObj.latitude || !locationObj.longitude) {
+      return res.json({
+        success: true,
+        similar_posts: [],
+        message: 'Incomplete location data'
+      });
+    }
+    
+    // Get current date in PH time
+    const now = new Date();
+    const phTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+    const currentDate = phTime.toISOString().split('T')[0];
+    
+    console.log('📅 Checking posts for date:', currentDate);
+    
+    // Search for posts on same day at similar location (within 500m radius)
+    const sql = `
+      SELECT 
+        tr.traffic_report_id,
+        tr.report_text,
+        tr.image,
+        tr.location,
+        tr.created_at,
+        tr.is_accident_report,
+        COALESCE(c."profile-image", d.imageurl) as "profile-image",
+        CASE 
+          WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
+          WHEN c.commuter_id IS NOT NULL THEN c.fname
+          ELSE tr.user_name
+        END as display_name,
+        d.fname as driver_fname,
+        d.lastname as driver_lastname,
+        c.fname as commuter_fname,
+        d.driverid,
+        c.commuter_id,
+        d.email as driver_email,
+        c.email as commuter_email,
+        COUNT(DISTINCT l.like_id) as like_count,
+        COUNT(DISTINCT tc.comment_id) as comment_count
+      FROM traffic_reports tr
+      LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
+      LEFT JOIN drivers d ON tr.driver_id = d.driverid
+      LEFT JOIN traffic_report_likes l ON tr.traffic_report_id = l.traffic_report_id
+      LEFT JOIN traffic_report_comments tc ON tr.traffic_report_id = tc.traffic_report_id
+      WHERE DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $1
+      AND tr.location IS NOT NULL
+      AND (
+        -- Exclude current user's own posts by checking email
+        (c.email IS NULL OR c.email != $2)
+        AND (d.email IS NULL OR d.email != $2)
+      )
+      AND (
+        -- Approximate distance calculation (within ~500m)
+        ABS((tr.location->>'latitude')::FLOAT - $3::FLOAT) < 0.0045 -- ~500m
+        AND ABS((tr.location->>'longitude')::FLOAT - $4::FLOAT) < 0.0045 -- ~500m
+      )
+      GROUP BY tr.traffic_report_id, c."profile-image", d.imageurl, c.fname, d.fname, d.lastname, d.driverid, c.commuter_id, d.email, c.email
+      ORDER BY tr.created_at DESC
+      LIMIT 5
+    `;
+    
+    const result = await db.query(sql, [
+      currentDate,
+      email, // Use email to exclude user's own posts
+      locationObj.latitude,
+      locationObj.longitude
+    ]);
+    
+    // Parse locations and format posts
+    const similarPosts = result.rows.map(row => {
+      let loc = null;
+      try {
+        loc = typeof row.location === 'string' 
+          ? JSON.parse(row.location) 
+          : row.location;
+      } catch (error) {
+        console.error('Error parsing location:', error);
+      }
       
-//       if (driverResult.rows.length > 0) {
-//         driver_id = driverResult.rows[0].driverid;
-//         user_name_to_use = driverResult.rows[0].fname || user_name_to_use;
-//         profile_image = driverResult.rows[0].imageurl;
-//       } else {
-//         return res.status(404).json({ success: false, message: 'User not found.' });
-//       }
-//     }
+      return {
+        traffic_report_id: row.traffic_report_id,
+        report_text: row.report_text,
+        image: row.image,
+        location: loc,
+        created_at: row.created_at,
+        user_name: row.display_name,
+        'profile-image': row['profile-image'],
+        like_count: parseInt(row.like_count) || 0,
+        comment_count: parseInt(row.comment_count) || 0,
+        display_name: row.display_name,
+        driver_fname: row.driver_fname,
+        driver_lastname: row.driver_lastname,
+        commuter_fname: row.commuter_fname,
+        driver_id: row.driverid,
+        commuter_id: row.commuter_id,
+        email: row.driver_email || row.commuter_email,
+        is_accident_report: row.is_accident_report || false
+      };
+    });
+    
+    console.log(`✅ Found ${similarPosts.length} similar posts`);
+    
+    res.json({
+      success: true,
+      similar_posts: similarPosts,
+      count: similarPosts.length,
+      current_date: currentDate
+    });
+    
+  } catch (error) {
+    console.error('❌ Error checking similar posts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check for similar posts',
+      error: error.message
+    });
+  }
+};
 
-//     let imageUrl = null;
-
-//     if (file) {
-//       console.log('🖼️ Image file detected, uploading to Cloudinary...');
-//       const result = await uploadToCloudinary(file.buffer);
-//       imageUrl = result.secure_url;
-//       console.log('✅ Image uploaded successfully:', imageUrl);
-//     }
-
-//     // Detect if this is an accident report
-//     const isAccidentReport = containsAccidentKeywords(text);
-  
-   
-//     const insertSql = `
-//     INSERT INTO traffic_reports (commuter_id, driver_id, report_text, image, location, user_name, is_accident_report)
-//     VALUES ($1, $2, $3, $4, $5, $6, $7)
-//     RETURNING *
-//   `.trim();
-
-//   const insertValues = [
-//     commuter_id,
-//     driver_id,
-//     text || '',
-//     imageUrl,
-//     location ? JSON.parse(location) : null,
-//     user_name_to_use,
-//     isAccidentReport
-//   ];
-
-//     console.log('Inserting values:', insertValues);
-
-//     const insertResult = await db.query(insertSql, insertValues);
-//     const newReport = insertResult.rows[0];
-
-//     console.log('✅ New report created in DB:', newReport);
-
-//     res.json({
-//       success: true,
-//       post: {
-//         traffic_report_id: newReport.traffic_report_id,
-//         report_text: newReport.report_text,
-//         image: newReport.image,
-//         location: typeof newReport.location === 'string' ? JSON.parse(newReport.location) : newReport.location,
-//         created_at: newReport.created_at,
-//         user_name: user_name_to_use,
-//         'profile-image': profile_image,
-//         is_accident_report: isAccidentReport
-//       },
-//       message: 'Traffic report created successfully'
-//     });
-
-//   } catch (error) {
-//     console.error('❌ Error creating traffic report:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Internal server error',
-//       error: error.message
-//     });
-//   }
-// };
+// Get all related posts (posts at same location on same day)
+// Get all related posts (posts at same location on same day)
+exports.getRelatedPosts = async (req, res) => {
+  try {
+    const { traffic_report_id } = req.params;
+    
+    console.log('🔗 Getting related posts for:', traffic_report_id);
+    
+    // Get the location and date of the current post
+    const postSql = `
+      SELECT location, created_at
+      FROM traffic_reports 
+      WHERE traffic_report_id = $1
+    `;
+    
+    const postResult = await db.query(postSql, [traffic_report_id]);
+    
+    if (postResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found'
+      });
+    }
+    
+    const currentPost = postResult.rows[0];
+    
+    let currentLocation;
+    try {
+      currentLocation = typeof currentPost.location === 'string' 
+        ? JSON.parse(currentPost.location) 
+        : currentPost.location;
+    } catch (error) {
+      console.error('Error parsing location:', error);
+      return res.json({
+        success: true,
+        related_posts: [],
+        message: 'Invalid location data'
+      });
+    }
+    
+    if (!currentLocation || !currentLocation.latitude || !currentLocation.longitude) {
+      return res.json({
+        success: true,
+        related_posts: [],
+        message: 'Post has no valid location'
+      });
+    }
+    
+    // Extract date part only
+    const postDate = new Date(currentPost.created_at);
+    const phTime = new Date(postDate.getTime() + (8 * 60 * 60 * 1000));
+    const postDateString = phTime.toISOString().split('T')[0];
+    
+    // Get all posts from same day at similar location (INCLUDING USER'S OWN POSTS)
+    const sql = `
+      SELECT 
+        tr.traffic_report_id,
+        tr.report_text,
+        tr.image,
+        tr.location,
+        tr.created_at,
+        tr.is_accident_report,
+        COALESCE(c."profile-image", d.imageurl) as "profile-image",
+        CASE 
+          WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
+          WHEN c.commuter_id IS NOT NULL THEN c.fname
+          ELSE tr.user_name
+        END as display_name,
+        d.fname as driver_fname,
+        d.lastname as driver_lastname,
+        c.fname as commuter_fname,
+        d.driverid,
+        c.commuter_id,
+        d.email as driver_email,
+        c.email as commuter_email,
+        COUNT(DISTINCT l.like_id) as like_count,
+        COUNT(DISTINCT tc.comment_id) as comment_count,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM traffic_report_verifications v 
+          WHERE v.traffic_report_id = tr.traffic_report_id 
+          AND v.verification_type = 'legit'
+        ), 0) as legit_verifications,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM traffic_report_verifications v 
+          WHERE v.traffic_report_id = tr.traffic_report_id 
+          AND v.verification_type = 'fake'
+        ), 0) as fake_verifications
+      FROM traffic_reports tr
+      LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
+      LEFT JOIN drivers d ON tr.driver_id = d.driverid
+      LEFT JOIN traffic_report_likes l ON tr.traffic_report_id = l.traffic_report_id
+      LEFT JOIN traffic_report_comments tc ON tr.traffic_report_id = tc.traffic_report_id
+      WHERE DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $1
+      AND tr.location IS NOT NULL
+      AND (
+        -- Approximate distance calculation (within ~500m)
+        ABS((tr.location->>'latitude')::FLOAT - $2::FLOAT) < 0.0045 -- ~500m
+        AND ABS((tr.location->>'longitude')::FLOAT - $3::FLOAT) < 0.0045 -- ~500m
+      )
+      GROUP BY tr.traffic_report_id, c."profile-image", d.imageurl, c.fname, d.fname, d.lastname, d.driverid, c.commuter_id, d.email, c.email
+      ORDER BY tr.created_at DESC
+    `;
+    
+    const result = await db.query(sql, [
+      postDateString,
+      currentLocation.latitude,
+      currentLocation.longitude
+    ]);
+    
+    // Parse locations and format posts
+    const relatedPosts = result.rows.map(row => {
+      let loc = null;
+      try {
+        loc = typeof row.location === 'string' 
+          ? JSON.parse(row.location) 
+          : row.location;
+      } catch (error) {
+        console.error('Error parsing location:', error);
+      }
+      
+      return {
+        traffic_report_id: row.traffic_report_id,
+        report_text: row.report_text,
+        image: row.image,
+        location: loc,
+        created_at: row.created_at,
+        user_name: row.display_name,
+        'profile-image': row['profile-image'],
+        like_count: parseInt(row.like_count) || 0,
+        comment_count: parseInt(row.comment_count) || 0,
+        display_name: row.display_name,
+        driver_fname: row.driver_fname,
+        driver_lastname: row.driver_lastname,
+        commuter_fname: row.commuter_fname,
+        driver_id: row.driverid,
+        commuter_id: row.commuter_id,
+        email: row.driver_email || row.commuter_email,
+        is_accident_report: row.is_accident_report || false,
+        legit_verifications: parseInt(row.legit_verifications) || 0,
+        fake_verifications: parseInt(row.fake_verifications) || 0
+      };
+    });
+    
+    console.log(`✅ Found ${relatedPosts.length} related posts`);
+    
+    res.json({
+      success: true,
+      related_posts: relatedPosts,
+      count: relatedPosts.length,
+      post_date: postDateString
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting related posts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get related posts',
+      error: error.message
+    });
+  }
+};
 
 exports.createTrafficReport = async (req, res) => {
   try {
@@ -5258,33 +5471,7 @@ exports.getMyPosts = async (req, res) => {
       }
     }
 
-    // const sql = `
-    //   SELECT 
-    //     tr.*,
-    //     COALESCE(c."profile-image", d.imageurl) as "profile-image",
-    //     CASE 
-    //       WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
-    //       WHEN c.commuter_id IS NOT NULL THEN c.fname
-    //       ELSE tr.user_name
-    //     END as display_name,
-    //     d.fname as driver_fname,
-    //     d.lastname as driver_lastname,   
-    //     c.fname as commuter_fname,
-    //     d.driverid,
-    //     c.commuter_id,
-    //     COUNT(l.like_id) as like_count,
-    //     COUNT(DISTINCT tc.comment_id) as comment_count
-    //   FROM traffic_reports tr
-    //   LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
-    //   LEFT JOIN drivers d ON tr.driver_id = d.driverid
-    //   LEFT JOIN traffic_report_likes l ON tr.traffic_report_id = l.traffic_report_id
-    //   LEFT JOIN traffic_report_comments tc ON tr.traffic_report_id = tc.traffic_report_id
-    //   WHERE (tr.commuter_id = $1 OR tr.driver_id = $2)
-    //   GROUP BY tr.traffic_report_id, c."profile-image", d.imageurl, c.fname, d.fname, d.lastname, d.driverid, c.commuter_id
-    //   ORDER BY tr.created_at DESC
-    // `;
-
-      const sql = `
+    const sql = `
   SELECT 
     tr.*,
     COALESCE(c."profile-image", d.imageurl) as "profile-image",
@@ -5315,44 +5502,25 @@ exports.getMyPosts = async (req, res) => {
     const result = await db.query(sql, [commuter_id, driver_id]);
     console.log('✅ User posts fetched:', result.rows.length, 'posts found');
 
-    // const posts = result.rows.map(row => ({
-    //   traffic_report_id: row.traffic_report_id,
-    //   report_text: row.report_text,
-    //   image: row.image,
-    //   location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
-    //   created_at: row.created_at,
-    //   user_name: row.user_name,
-    //   'profile-image': row['profile-image'],
-    //   like_count: parseInt(row.like_count) || 0,
-    //   comment_count: parseInt(row.comment_count) || 0,
-    //   display_name: row.display_name,
-    //   driver_fname: row.driver_fname,
-    //   driver_lastname: row.driver_lastname,
-    //   commuter_fname: row.commuter_fname,
-    //   driver_id: row.driverid,
-    //   commuter_id: row.commuter_id,
-    //   is_accident_report: row.is_accident_report || false,
-    // }));
-
-      const posts = result.rows.map(row => ({
-          traffic_report_id: row.traffic_report_id,
-          report_text: row.report_text,
-          image: row.image,
-          location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
-          created_at: row.created_at,
-          user_name: row.user_name,
-          'profile-image': row['profile-image'],
-          like_count: parseInt(row.like_count) || 0,
-          comment_count: parseInt(row.comment_count) || 0,
-          display_name: row.display_name,
-          driver_fname: row.driver_fname,
-          driver_lastname: row.driver_lastname,
-          commuter_fname: row.commuter_fname,
-          driver_id: row.driverid,
-          commuter_id: row.commuter_id,
-          email: row.driver_email || row.commuter_email || null,  // ADD THIS
-          is_accident_report: row.is_accident_report || false,
-        }));
+    const posts = result.rows.map(row => ({
+        traffic_report_id: row.traffic_report_id,
+        report_text: row.report_text,
+        image: row.image,
+        location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
+        created_at: row.created_at,
+        user_name: row.user_name,
+        'profile-image': row['profile-image'],
+        like_count: parseInt(row.like_count) || 0,
+        comment_count: parseInt(row.comment_count) || 0,
+        display_name: row.display_name,
+        driver_fname: row.driver_fname,
+        driver_lastname: row.driver_lastname,
+        commuter_fname: row.commuter_fname,
+        driver_id: row.driverid,
+        commuter_id: row.commuter_id,
+        email: row.driver_email || row.commuter_email || null,  // ADD THIS
+        is_accident_report: row.is_accident_report || false,
+      }));
 
     res.json({
       success: true,
@@ -5369,87 +5537,6 @@ exports.getMyPosts = async (req, res) => {
     });
   }
 };
-
-// exports.deleteMyPost = async (req, res) => {
-//   try {
-//     const { traffic_report_id } = req.params;
-//     const { email } = req.body;
-
-//     console.log('🗑️ Deleting post:', traffic_report_id, 'for user:', email);
-
-//     if (!email) {
-//       return res.status(400).json({ 
-//         success: false, 
-//         message: 'Email is required to delete a post.' 
-//       });
-//     }
-
-//     const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
-//     const commuterResult = await db.query(commuterQuery, [email]);
-
-//     let commuter_id = null; 
-//     let driver_id = null;
-
-//     if (commuterResult.rows.length > 0) {
-//       commuter_id = commuterResult.rows[0].commuter_id;
-//     } else {
-//       const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
-//       const driverResult = await db.query(driverQuery, [email]);
-      
-//       if (driverResult.rows.length > 0) {
-//         driver_id = driverResult.rows[0].driverid;
-//       } else {
-//         return res.status(404).json({ success: false, message: 'User not found.' });
-//       }
-//     }
-
-//     const checkOwnershipSql = `
-//       SELECT traffic_report_id FROM traffic_reports 
-//       WHERE traffic_report_id = $1 AND (commuter_id = $2 OR driver_id = $3)
-//     `;
-
-//     const ownershipResult = await db.query(checkOwnershipSql, [
-//       traffic_report_id,
-//       commuter_id,
-//       driver_id
-//     ]);
-
-//     if (ownershipResult.rows.length === 0) {
-//       return res.status(403).json({ 
-//         success: false, 
-//         message: 'You can only delete your own posts.' 
-//       });
-//     }
-
-//     // Delete verifications first
-//     const deleteVerificationsSql = 'DELETE FROM traffic_report_verifications WHERE traffic_report_id = $1';
-//     await db.query(deleteVerificationsSql, [traffic_report_id]);
-
-//     const deleteLikesSql = 'DELETE FROM traffic_report_likes WHERE traffic_report_id = $1';
-//     await db.query(deleteLikesSql, [traffic_report_id]);
-
-//     const deleteCommentsSql = 'DELETE FROM traffic_report_comments WHERE traffic_report_id = $1';
-//     await db.query(deleteCommentsSql, [traffic_report_id]);
-
-//     const deletePostSql = 'DELETE FROM traffic_reports WHERE traffic_report_id = $1';
-//     await db.query(deletePostSql, [traffic_report_id]);
-
-//     console.log('✅ Post deleted successfully');
-
-//     res.json({
-//       success: true,
-//       message: 'Post deleted successfully'
-//     });
-
-//   } catch (error) {
-//     console.error('❌ Error deleting post:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to delete post',
-//       error: error.message
-//     });
-//   }
-// };
 
 exports.deleteMyPost = async (req, res) => {
   try {
@@ -5944,29 +6031,6 @@ exports.getComments = async (req, res) => {
     const { traffic_report_id } = req.params;
     
     console.log('💬 Fetching comments for report:', traffic_report_id);
-    
-    // const sql = `
-    //   SELECT 
-    //     c.*,
-    //     COALESCE(cm."profile-image", d.imageurl) as "profile-image"
-    //   FROM traffic_report_comments c
-    //   LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
-    //   LEFT JOIN drivers d ON c.driver_id = d.driverid
-    //   WHERE c.traffic_report_id = $1
-    //   ORDER BY c.created_at ASC
-    // `;
-
-    //    const sql = `
-    //   SELECT 
-    //     c.*,
-    //     COALESCE(cm."profile-image", d.imageurl) as "profile-image",
-    //     (SELECT COUNT(*) FROM comment_replies cr WHERE cr.comment_id = c.comment_id) as reply_count
-    //   FROM traffic_report_comments c
-    //   LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
-    //   LEFT JOIN drivers d ON c.driver_id = d.driverid
-    //   WHERE c.traffic_report_id = $1
-    //   ORDER BY c.created_at ASC
-    // `;
 
     const sql = `
       SELECT 
@@ -5998,89 +6062,6 @@ exports.getComments = async (req, res) => {
     });
   }
 };
-
-// exports.addComment = async (req, res) => {
-//   try {
-//     const { traffic_report_id } = req.params;
-//     const { comment_text, email, user_name } = req.body;
-    
-//     console.log('💬 Adding comment to report:', traffic_report_id);
-
-//     if (!email) {
-//       return res.status(400).json({ success: false, message: 'Email is required to add a comment.' });
-//     }
-
-//     if (!comment_text || comment_text.trim() === '') {
-//       return res.status(400).json({ success: false, message: 'Comment text is required.' });
-//     }
-
-//     const commuterQuery = 'SELECT commuter_id FROM commuters WHERE email = $1';
-//     const commuterResult = await db.query(commuterQuery, [email]);
-
-//     let commuter_id = null; 
-//     let driver_id = null;
-//     let user_name_to_use = user_name || email.split('@')[0];
-
-//     if (commuterResult.rows.length > 0) {
-//       commuter_id = commuterResult.rows[0].commuter_id;
-//     } else {
-//       const driverQuery = 'SELECT driverid FROM drivers WHERE email = $1';
-//       const driverResult = await db.query(driverQuery, [email]);
-      
-//       if (driverResult.rows.length > 0) {
-//         driver_id = driverResult.rows[0].driverid;
-//       } else {
-//         return res.status(404).json({ success: false, message: 'User not found.' });
-//       }
-//     }
-
-//     const insertSql = `
-//       INSERT INTO traffic_report_comments (traffic_report_id, commuter_id, driver_id, comment_text, user_name)
-//       VALUES ($1, $2, $3, $4, $5)
-//       RETURNING *
-//     `;
-
-//     const insertValues = [
-//       traffic_report_id,
-//       commuter_id,
-//       driver_id,
-//       comment_text.trim(),
-//       user_name_to_use
-//     ];
-
-//     const insertResult = await db.query(insertSql, insertValues);
-//     const newComment = insertResult.rows[0];
-
-//     const commentWithProfileSql = `
-//       SELECT 
-//         c.*,
-//         COALESCE(cm."profile-image", d.imageurl) as "profile-image"
-//       FROM traffic_report_comments c
-//       LEFT JOIN commuters cm ON c.commuter_id = cm.commuter_id
-//       LEFT JOIN drivers d ON c.driver_id = d.driverid
-//       WHERE c.comment_id = $1
-//     `;
-
-//     const commentResult = await db.query(commentWithProfileSql, [newComment.comment_id]);
-//     const fullComment = commentResult.rows[0];
-
-//     console.log('✅ Comment added successfully');
-
-//     res.json({
-//       success: true,
-//       comment: fullComment,
-//       message: 'Comment added successfully'
-//     });
-
-//   } catch (error) {
-//     console.error('❌ Error adding comment:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to add comment',
-//       error: error.message
-//     });
-//   }
-// };
 
 exports.addComment = async (req, res) => {
   try {
@@ -6347,46 +6328,8 @@ exports.getTrafficReports = async (req, res) => {
     const currentDate = phTime.toISOString().split('T')[0];
     
     console.log('📅 Current PH Date:', currentDate);
-    
-  //   const sql = `
-  //   SELECT 
-  //     tr.*,
-  //     COALESCE(c."profile-image", d.imageurl) as "profile-image",
-  //     CASE 
-  //       WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
-  //       WHEN c.commuter_id IS NOT NULL THEN c.fname
-  //       ELSE tr.user_name
-  //     END as display_name,
-  //     d.fname as driver_fname,
-  //     d.lastname as driver_lastname,   
-  //     c.fname as commuter_fname,
-  //     d.driverid,
-  //     c.commuter_id,
-  //     COUNT(l.like_id) as like_count,
-  //     COUNT(DISTINCT tc.comment_id) as comment_count,
-  //     COALESCE((
-  //       SELECT COUNT(*) 
-  //       FROM traffic_report_verifications v 
-  //       WHERE v.traffic_report_id = tr.traffic_report_id 
-  //       AND v.verification_type = 'legit'
-  //     ), 0) as legit_verifications,
-  //     COALESCE((
-  //       SELECT COUNT(*) 
-  //       FROM traffic_report_verifications v 
-  //       WHERE v.traffic_report_id = tr.traffic_report_id 
-  //       AND v.verification_type = 'fake'
-  //     ), 0) as fake_verifications
-  //   FROM traffic_reports tr
-  //   LEFT JOIN commuters c ON tr.commuter_id = c.commuter_id
-  //   LEFT JOIN drivers d ON tr.driver_id = d.driverid
-  //   LEFT JOIN traffic_report_likes l ON tr.traffic_report_id = l.traffic_report_id
-  //   LEFT JOIN traffic_report_comments tc ON tr.traffic_report_id = tc.traffic_report_id
-  //   WHERE DATE(tr.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Manila') = $1
-  //   GROUP BY tr.traffic_report_id, c."profile-image", d.imageurl, c.fname, d.fname, d.lastname, d.driverid, c.commuter_id
-  //   ORDER BY tr.created_at DESC
-  // `;
 
-      const sql = `
+    const sql = `
   SELECT 
     tr.*,
     COALESCE(c."profile-image", d.imageurl) as "profile-image",
@@ -6480,60 +6423,32 @@ exports.getTrafficReports = async (req, res) => {
         }));
       }
     }
-    
 
-    // const posts = postsWithLikes.map(row => {
-    //   return {
-    //     traffic_report_id: row.traffic_report_id,
-    //     report_text: row.report_text,
-    //     image: row.image,
-    //     location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
-    //     created_at: row.created_at,
-    //     user_name: row.user_name,
-    //     'profile-image': row['profile-image'],
-    //     like_count: parseInt(row.like_count) || 0,
-    //     comment_count: parseInt(row.comment_count) || 0,
-    //     user_liked: row.user_liked || false,
-    //     display_name: row.display_name,
-    //     driver_fname: row.driver_fname,
-    //     driver_lastname: row.driver_lastname,
-    //     commuter_fname: row.commuter_fname,
-    //     driver_id: row.driverid,
-    //     commuter_id: row.commuter_id,
-    //     email: row.email,
-    //     is_accident_report: row.is_accident_report || false,
-    //     legit_verifications: parseInt(row.legit_verifications) || 0,
-    //     fake_verifications: parseInt(row.fake_verifications) || 0,
-    //     user_verification: row.user_verification || null
-    //   };
-    // });
-
-      const posts = postsWithLikes.map(row => {
-          return {
-            traffic_report_id: row.traffic_report_id,
-            report_text: row.report_text,
-            image: row.image,
-            location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
-            created_at: row.created_at,
-            user_name: row.user_name,
-            'profile-image': row['profile-image'],
-            like_count: parseInt(row.like_count) || 0,
-            comment_count: parseInt(row.comment_count) || 0,
-            user_liked: row.user_liked || false,
-            display_name: row.display_name,
-            driver_fname: row.driver_fname,
-            driver_lastname: row.driver_lastname,
-            commuter_fname: row.commuter_fname,
-            driver_id: row.driverid,
-            commuter_id: row.commuter_id,
-            email: row.driver_email || row.commuter_email || null,  // ADD THIS - use the joined email
-            is_accident_report: row.is_accident_report || false,
-            legit_verifications: parseInt(row.legit_verifications) || 0,
-            fake_verifications: parseInt(row.fake_verifications) || 0,
-            user_verification: row.user_verification || null
-          };
-        });
-
+    const posts = postsWithLikes.map(row => {
+      return {
+        traffic_report_id: row.traffic_report_id,
+        report_text: row.report_text,
+        image: row.image,
+        location: typeof row.location === 'string' ? JSON.parse(row.location) : row.location,
+        created_at: row.created_at,
+        user_name: row.user_name,
+        'profile-image': row['profile-image'],
+        like_count: parseInt(row.like_count) || 0,
+        comment_count: parseInt(row.comment_count) || 0,
+        user_liked: row.user_liked || false,
+        display_name: row.display_name,
+        driver_fname: row.driver_fname,
+        driver_lastname: row.driver_lastname,
+        commuter_fname: row.commuter_fname,
+        driver_id: row.driverid,
+        commuter_id: row.commuter_id,
+        email: row.driver_email || row.commuter_email || null,  // ADD THIS - use the joined email
+        is_accident_report: row.is_accident_report || false,
+        legit_verifications: parseInt(row.legit_verifications) || 0,
+        fake_verifications: parseInt(row.fake_verifications) || 0,
+        user_verification: row.user_verification || null
+      };
+    });
 
     res.json({
       success: true,
@@ -6550,7 +6465,6 @@ exports.getTrafficReports = async (req, res) => {
     });
   }
 };
-
 
 exports.likeComment = async (req, res) => {
   try {
@@ -6810,31 +6724,8 @@ exports.getReplies = async (req, res) => {
     const { comment_id } = req.params;
     
     console.log('💬 Fetching ALL replies for comment:', comment_id);
-    
-    // const sql = `
-    //   SELECT 
-    //     cr.*,
-    //     COALESCE(cm."profile-image", d.imageurl) as "profile-image",
-    //     CASE 
-    //       WHEN d.driverid IS NOT NULL THEN CONCAT(d.fname, ' ', COALESCE(d.lastname, ''))
-    //       WHEN cr.commuter_id IS NOT NULL THEN cm.fname
-    //       ELSE cr.user_name
-    //     END as display_name,
-    //     d.fname as driver_fname,
-    //     d.lastname as driver_lastname,   
-    //     cm.fname as commuter_fname,
-    //     d.driverid,
-    //     cr.commuter_id,
-    //     cm.email as commuter_email,
-    //     d.email as driver_email
-    //   FROM comment_replies cr
-    //   LEFT JOIN commuters cm ON cr.commuter_id = cm.commuter_id
-    //   LEFT JOIN drivers d ON cr.driver_id = d.driverid
-    //   WHERE cr.comment_id = $1
-    //   ORDER BY cr.created_at ASC
-    // `;
 
-      const sql = `
+    const sql = `
           SELECT 
             cr.*,
             COALESCE(cm."profile-image", d.imageurl) as "profile-image",
@@ -6856,7 +6747,6 @@ exports.getReplies = async (req, res) => {
           WHERE cr.comment_id = $1
           ORDER BY cr.created_at ASC
         `;
-      
     
     const result = await db.query(sql, [comment_id]);
     
@@ -6877,7 +6767,6 @@ exports.getReplies = async (req, res) => {
 
 // ========== CREDIBILITY SYSTEM ENDPOINTS ==========
 
-// Verify a report as legit or fake
 // Verify a report as legit or fake
 exports.verifyReport = async (req, res) => {
   try {
@@ -7139,7 +7028,6 @@ exports.getUserVerifications = async (req, res) => {
     });
   }
 };
-
 
 // Get similar accident reports in the same area (ONLY FROM CURRENT DAY AND OTHER USERS)
 exports.getSimilarAccidentReports = async (req, res) => {
