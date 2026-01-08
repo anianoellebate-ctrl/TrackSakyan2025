@@ -91,4 +91,7 @@ router.put('/comments/:comment_id', trafficController.editComment);
 router.delete('/replies/:reply_id', trafficController.deleteReply);
 router.put('/replies/:reply_id', trafficController.editReply);
 
+router.post('/check-similar-posts', trafficController.checkSimilarPosts);
+router.get('/:traffic_report_id/related-posts', trafficController.getRelatedPosts);
+
 module.exports = router;
